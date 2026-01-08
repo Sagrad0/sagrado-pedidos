@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // MVP interno: sem tela de login. O app usa Auth Anônimo.
+    // Regra mínima: só permite acesso quando autenticado (anônimo ou não).
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
