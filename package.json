@@ -2,21 +2,35 @@
   "name": "sagrado-pedidos",
   "version": "0.1.0",
   "private": true,
-
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
-
   "dependencies": {
-    "firebase": "^10.7.1",
+    "@hookform/resolvers": "^3.3.2",
+    "date-fns": "^2.30.0",
+    "firebase": "^10.14.1",
     "next": "14.0.4",
+    "next-pwa": "^5.6.0",
+    "pdf-lib": "^1.17.1",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "react-hook-form": "^7.48.2",
+    "zod": "^3.22.4"
   },
-
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.18",
+    "autoprefixer": "^10.4.16",
+    "eslint": "^8.56.0",
+    "eslint-config-next": "14.0.4",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.3.3"
+  },
   "overrides": {
     "undici": "5.28.4"
   }
