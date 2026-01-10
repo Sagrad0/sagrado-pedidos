@@ -48,7 +48,7 @@ export default function NewOrderPage() {
     }
   }
 
-  const filteredCustomers = customers.filter(c => 
+  const filteredCustomers = customers.filter(c =>
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
     c.phone.includes(customerSearch)
   )
@@ -60,7 +60,7 @@ export default function NewOrderPage() {
 
   const addProduct = (product: Product) => {
     const existingItem = orderItems.find(item => item.productId === product.id)
-    
+
     if (existingItem) {
       updateItemQuantity(product.id, existingItem.qty + 1)
     } else {
@@ -79,7 +79,7 @@ export default function NewOrderPage() {
       }
       setOrderItems([...orderItems, newItem])
     }
-    
+
     setProductSearch('')
     setShowProductDropdown(false)
   }
@@ -93,7 +93,7 @@ export default function NewOrderPage() {
       removeItem(productId)
       return
     }
-    
+
     setOrderItems(orderItems.map(item => {
       if (item.productId === productId) {
         return {
@@ -127,7 +127,7 @@ export default function NewOrderPage() {
       alert('Selecione um cliente')
       return
     }
-    
+
     if (orderItems.length === 0) {
       alert('Adicione pelo menos um item ao pedido')
       return
@@ -137,16 +137,17 @@ export default function NewOrderPage() {
     try {
       const orderData = {
         customerId: selectedCustomerId,
-        items: orderItems.map(({ productId, qty, unitPrice }) => ({
+        items: orderItems.map(({ productId, qty, unitPrice, productSnapshot }) => ({
           productId,
           qty,
           unitPrice,
+          productSnapshot: productSnapshot ?? null,
         })),
         discount,
         freight,
         notes,
       }
-      
+
       const orderId = await createOrder(orderData)
       router.push(`/orders/${orderId}`)
     } catch (error) {
@@ -193,7 +194,7 @@ export default function NewOrderPage() {
                 onFocus={() => setShowCustomerDropdown(true)}
                 className="form-input"
               />
-              
+
               {showCustomerDropdown && customerSearch && (
                 <div className="absolute z-10 w-full bg-white border border-gray-300 rounded-md mt-1 max-h-48 overflow-y-auto">
                   {filteredCustomers.map(customer => (
@@ -212,7 +213,7 @@ export default function NewOrderPage() {
                 </div>
               )}
             </div>
-            
+
             {selectedCustomer && (
               <div className="mt-4 p-4 bg-gray-50 rounded-md">
                 <p><strong>Nome:</strong> {selectedCustomer.name}</p>
@@ -238,7 +239,7 @@ export default function NewOrderPage() {
                 onFocus={() => setShowProductDropdown(true)}
                 className="form-input"
               />
-              
+
               {showProductDropdown && productSearch && (
                 <div className="absolute z-10 w-full bg-white border border-gray-300 rounded-md mt-1 max-h-48 overflow-y-auto">
                   {filteredProducts.map(product => (
