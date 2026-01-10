@@ -26,6 +26,10 @@ export const createOrder = async (data: OrderFormData): Promise<string> => {
   const db = getDbInstance()
   const orderNumber = await generateOrderId()
 
+  // ✅ snapshot do cliente (a UI depende disso em listas e PDF)
+  const customer = await getCustomer(data.customerId)
+  if (!customer) throw new Error('Cliente não encontrado para este pedido')
+
   // ✅ defaults para evitar undefined
   const discount = data.discount ?? 0
   const freight = data.freight ?? 0
@@ -37,6 +41,13 @@ export const createOrder = async (data: OrderFormData): Promise<string> => {
   const orderData: Omit<Order, 'id'> = {
     orderNumber,
     customerId: data.customerId,
+    customerSnapshot: {
+      name: customer.name,
+      doc: customer.doc,
+      phone: customer.phone,
+      email: customer.email,
+      address: customer.address,
+    },
     // ✅ Mantém alinhado com a UI que usa label "orcamento"
     status: 'orcamento' as OrderStatus,
     items: data.items.map((item) => ({
@@ -140,7 +151,6 @@ export const getOrdersByCustomer = async (customerId: string): Promise<Order[]> 
   })
 }
 
-/** ✅ Export que a página /orders está pedindo */
 export const getOrdersByStatus = async (status: OrderStatus): Promise<Order[]> => {
   await ensureFirestorePersistence()
   await ensureAnonAuth()
@@ -169,19 +179,17 @@ export const getOrdersByStatus = async (status: OrderStatus): Promise<Order[]> =
   })
 }
 
-/**
- * ✅ Export que a página /orders está pedindo
- * Busca simples: número do pedido e observações (case-insensitive).
- */
 export const searchOrders = async (searchTerm: string): Promise<Order[]> => {
-  const term = (searchTerm || '').toLowerCase().trim()
-  const all = await getAllOrders()
-  if (!term) return all
+  const normalizedSearch = searchTerm.toLowerCase().trim()
 
-  return all.filter((o) => {
-    const orderNumber = (o.orderNumber || '').toLowerCase()
-    const notes = (o.notes || '').toLowerCase()
-    return orderNumber.includes(term) || notes.includes(term)
+  const all = await getAllOrders()
+  if (!normalizedSearch) return all
+
+  return all.filter((order) => {
+    return (
+      order.orderNumber.toLowerCase().includes(normalizedSearch) ||
+      order.status.toLowerCase().includes(normalizedSearch)
+    )
   })
 }
 
@@ -190,10 +198,8 @@ export const updateOrderStatus = async (id: string, status: OrderStatus): Promis
   await ensureAnonAuth()
 
   const db = getDbInstance()
-  const docRef = doc(db, COLLECTION_NAME, id)
-
   await setDoc(
-    docRef,
+    doc(db, COLLECTION_NAME, id),
     {
       status,
       updatedAt: serverTimestamp(),
@@ -202,115 +208,147 @@ export const updateOrderStatus = async (id: string, status: OrderStatus): Promis
   )
 }
 
-export const updateOrder = async (id: string, data: Partial<OrderFormData>): Promise<void> => {
+export const updateOrderNotes = async (id: string, notes: string): Promise<void> => {
   await ensureFirestorePersistence()
   await ensureAnonAuth()
 
   const db = getDbInstance()
-  const docRef = doc(db, COLLECTION_NAME, id)
-
-  let totalsUpdate: any = {}
-
-  if (data.items || typeof data.discount === 'number' || typeof data.freight === 'number') {
-    const current = await getOrder(id)
-    if (!current) throw new Error('Order not found')
-
-    const items = data.items
-      ? data.items.map((i) => ({ ...i, total: i.qty * i.unitPrice }))
-      : current.items
-
-    const discount = typeof data.discount === 'number' ? data.discount : current.totals.discount
-    const freight = typeof data.freight === 'number' ? data.freight : current.totals.freight
-
-    const subtotal = items.reduce((sum, item) => sum + item.total, 0)
-    const total = subtotal - discount + freight
-
-    totalsUpdate = {
-      items,
-      totals: {
-        subtotal,
-        discount,
-        freight,
-        total,
-      },
-    }
-  }
-
   await setDoc(
-    docRef,
+    doc(db, COLLECTION_NAME, id),
     {
-      ...(data.notes !== undefined ? { notes: data.notes } : {}),
-      ...(data.customerId !== undefined ? { customerId: data.customerId } : {}),
-      ...totalsUpdate,
+      notes,
       updatedAt: serverTimestamp(),
     },
     { merge: true }
   )
 }
 
-export const deleteOrder = async (id: string): Promise<void> => {
+export const updateOrderItemQty = async (
+  orderId: string,
+  productId: string,
+  qty: number
+): Promise<void> => {
   await ensureFirestorePersistence()
   await ensureAnonAuth()
 
   const db = getDbInstance()
-  const docRef = doc(db, COLLECTION_NAME, id)
+  const order = await getOrder(orderId)
+  if (!order) throw new Error('Pedido não encontrado')
 
-  await setDoc(
-    docRef,
-    {
-      status: 'deleted',
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  )
-}
-
-export const enrichOrder = async (order: Order) => {
-  const customer = await getCustomer(order.customerId)
-  const enrichedItems = await Promise.all(
-    order.items.map(async (item: any) => {
-      const product = await getProduct(item.productId)
-      return {
-        ...item,
-        product,
-      }
-    })
-  )
-
-  return {
-    ...order,
-    customer,
-    items: enrichedItems,
-  }
-}
-
-export const getLatestOrders = async (count = 10): Promise<Order[]> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const q = query(collection(db, COLLECTION_NAME), orderBy('createdAt', 'desc'), limit(count))
-  const querySnapshot = await getDocs(q)
-
-  return querySnapshot.docs.map((docSnap) => {
-    const data = docSnap.data() as any
+  const items = order.items.map((item) => {
+    if (item.productId !== productId) return item
+    const unitPrice = item.unitPrice
     return {
-      id: docSnap.id,
-      orderNumber: data.orderNumber,
-      customerId: data.customerId,
-      status: data.status,
-      items: data.items,
-      totals: data.totals,
-      notes: data.notes,
-      createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt,
-      updatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : data.updatedAt,
-    } as Order
+      ...item,
+      qty,
+      total: qty * unitPrice,
+    }
   })
+
+  const subtotal = items.reduce((sum, item) => sum + item.total, 0)
+  const discount = order.totals.discount ?? 0
+  const freight = order.totals.freight ?? 0
+  const total = subtotal - discount + freight
+
+  await setDoc(
+    doc(db, COLLECTION_NAME, orderId),
+    {
+      items,
+      totals: { subtotal, discount, freight, total },
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  )
+}
+
+export const removeOrderItem = async (orderId: string, productId: string): Promise<void> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
+  const db = getDbInstance()
+  const order = await getOrder(orderId)
+  if (!order) throw new Error('Pedido não encontrado')
+
+  const items = order.items.filter((item) => item.productId !== productId)
+
+  const subtotal = items.reduce((sum, item) => sum + item.total, 0)
+  const discount = order.totals.discount ?? 0
+  const freight = order.totals.freight ?? 0
+  const total = subtotal - discount + freight
+
+  await setDoc(
+    doc(db, COLLECTION_NAME, orderId),
+    {
+      items,
+      totals: { subtotal, discount, freight, total },
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  )
+}
+
+export const addOrderItem = async (
+  orderId: string,
+  productId: string,
+  qty: number
+): Promise<void> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
+  const db = getDbInstance()
+  const order = await getOrder(orderId)
+  if (!order) throw new Error('Pedido não encontrado')
+
+  const product = await getProduct(productId)
+  if (!product) throw new Error('Produto não encontrado')
+
+  const existing = order.items.find((i) => i.productId === productId)
+
+  let items: any[] = []
+  if (existing) {
+    items = order.items.map((item) => {
+      if (item.productId !== productId) return item
+      const newQty = item.qty + qty
+      return { ...item, qty: newQty, total: newQty * item.unitPrice }
+    })
+  } else {
+    const unitPrice = (product as any).price ?? 0
+    items = [
+      ...order.items,
+      {
+        productId,
+        qty,
+        unitPrice,
+        total: qty * unitPrice,
+        productSnapshot: {
+          sku: product.sku,
+          name: product.name,
+          unit: product.unit,
+          weight: product.weight,
+        },
+      },
+    ]
+  }
+
+  const subtotal = items.reduce((sum, item) => sum + item.total, 0)
+  const discount = order.totals.discount ?? 0
+  const freight = order.totals.freight ?? 0
+  const total = subtotal - discount + freight
+
+  await setDoc(
+    doc(db, COLLECTION_NAME, orderId),
+    {
+      items,
+      totals: { subtotal, discount, freight, total },
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  )
 }
 
 export const duplicateOrder = async (orderId: string): Promise<string> => {
   const originalOrder = await getOrder(orderId)
-  if (!originalOrder) throw new Error('Order not found')
+  if (!originalOrder) throw new Error('Pedido não encontrado')
 
   const newOrderData: OrderFormData = {
     customerId: originalOrder.customerId,
