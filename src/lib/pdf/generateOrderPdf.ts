@@ -1,8 +1,6 @@
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 import { Order } from '@/types'
 
-
-
 type PdfKind = 'ORCAMENTO' | 'PEDIDO'
 
 const M = 36 // margin
@@ -22,18 +20,35 @@ export async function generateOrderPdf(order: Order) {
   page.drawRectangle({ x: 0, y: height - 86, width, height: 86, color: cSoft })
 
   const pdfBytes = await pdfDoc.save()
-  const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+
+  /**
+   * FIX TS/BlobPart:
+   * Em alguns builds (Vercel/TS libs), o retorno tipa como Uint8Array<ArrayBufferLike>
+   * e o BlobPart exige ArrayBuffer. A forma mais segura é copiar para um Uint8Array
+   * "normal" (com ArrayBuffer), sem mudar dados e sem any espalhado.
+   */
+  const safeBytes = new Uint8Array(pdfBytes)
+
+  const blob = new Blob([safeBytes], { type: 'application/pdf' })
   const url = URL.createObjectURL(blob)
+
   const a = document.createElement('a')
   a.href = url
-  const kind = order.status === 'pedido' ? 'PEDIDO' : 'ORCAMENTO'
+
+  const kind: PdfKind = order.status === 'pedido' ? 'PEDIDO' : 'ORCAMENTO'
   const prefix = kind === 'PEDIDO' ? 'PED' : 'ORC'
-  const fileNumber = (order.orderNumber || '').startsWith('PED-') || (order.orderNumber || '').startsWith('ORC-')
-    ? order.orderNumber
-    : `${prefix}-${order.orderNumber}`
+
+  const orderNumber = order.orderNumber || ''
+  const fileNumber =
+    orderNumber.startsWith('PED-') || orderNumber.startsWith('ORC-')
+      ? orderNumber
+      : `${prefix}-${orderNumber}`
+
   a.download = `${kind}_${fileNumber}.pdf`
+
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
+
   URL.revokeObjectURL(url)
 }
