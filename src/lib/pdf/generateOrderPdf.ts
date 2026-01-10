@@ -1,490 +1,218 @@
-import { Order, OrderFormData, OrderStatus } from '@/types'
-import { getDbInstance, ensureAnonAuth, ensureFirestorePersistence } from '@/lib/firebase'
-import {
-  addDoc,
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  where,
-} from 'firebase/firestore'
-import { getCustomer } from './customers'
-import { getProduct } from './products'
-import { generateOrderId } from './counters'
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
+import { Order } from '@/types'
+import { format } from 'date-fns'
+import { ptBR } from 'date-fns/locale'
 
-const COLLECTION_NAME = 'orders'
+export async function generateOrderPdf(order: Order): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create()
+  const page = pdfDoc.addPage([595.28, 841.89]) // A4 size
 
-/** Converte Timestamp/number para epoch ms */
-const toMs = (v: any): number => {
-  if (v == null) return Date.now()
-  if (typeof v === 'number') return v
-  if (v?.toMillis) return v.toMillis()
-  if (v?.toDate) return v.toDate().getTime()
-  return Date.now()
-}
+  const { width, height } = page.getSize()
+  const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica)
+  const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
-/** Garante snapshots obrigatórios para não quebrar UI */
-const ensureSnapshots = async (data: any) => {
-  // Customer snapshot
-  let customerSnapshot = data.customerSnapshot
-  if (!customerSnapshot && data.customerId) {
-    try {
-      const c = await getCustomer(data.customerId)
-      if (c) {
-        customerSnapshot = {
-          name: c.name,
-          doc: c.doc,
-          phone: c.phone,
-          email: c.email,
-          address: c.address,
-        }
-      }
-    } catch {
-      // silencioso: cai pro fallback abaixo
-    }
-  }
+  const margin = 50
+  let y = height - margin
 
-  if (!customerSnapshot) {
-    customerSnapshot = {
-      name: '—',
-      doc: '',
-      phone: '',
-      email: '',
-      address: '',
-    }
-  }
-
-  // Items snapshot (produto)
-  const items = Array.isArray(data.items) ? data.items : []
-  const fixedItems = items.map((it: any) => {
-    const ps = it?.productSnapshot
-    return {
-      ...it,
-      productSnapshot: ps ?? {
-        sku: '',
-        name: 'Produto sem snapshot',
-        unit: '',
-        weight: undefined,
-      },
-      total: typeof it?.total === 'number' ? it.total : (it?.qty ?? 0) * (it?.unitPrice ?? 0),
-    }
+  // Header
+  page.drawText('Sagrado - Pedido', {
+    x: margin,
+    y,
+    size: 18,
+    font: helveticaBold,
+    color: rgb(0, 0, 0),
   })
 
-  return { customerSnapshot, items: fixedItems }
-}
+  y -= 30
 
-export const createOrder = async (data: OrderFormData): Promise<string> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const orderNumber = await generateOrderId()
-
-  const customer = await getCustomer(data.customerId)
-  if (!customer) throw new Error('Cliente não encontrado para este pedido')
-
-  const discount = data.discount ?? 0
-  const freight = data.freight ?? 0
-  const notes = data.notes ?? ''
-
-  const subtotal = data.items.reduce((sum, item) => sum + item.qty * item.unitPrice, 0)
-  const total = subtotal - discount + freight
-
-  const orderData: Omit<Order, 'id'> = {
-    orderNumber,
-    customerId: data.customerId,
-    customerSnapshot: {
-      name: customer.name,
-      doc: customer.doc,
-      phone: customer.phone,
-      email: customer.email,
-      address: customer.address,
-    },
-    status: 'orcamento' as OrderStatus,
-    items: data.items.map((item) => ({
-      ...item,
-      total: item.qty * item.unitPrice,
-    })),
-    totals: { subtotal, discount, freight, total },
-    notes,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  }
-
-  const docRef = await addDoc(collection(db, COLLECTION_NAME), {
-    ...orderData,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+  // Order info
+  page.drawText(`Pedido: ${order.orderNumber}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
   })
 
-  return docRef.id
-}
+  y -= 20
 
-export const getOrder = async (id: string): Promise<Order | null> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const docRef = doc(db, COLLECTION_NAME, id)
-  const docSnap = await getDoc(docRef)
-
-  if (!docSnap.exists()) return null
-
-  const data = docSnap.data() as any
-  const { customerSnapshot, items } = await ensureSnapshots(data)
-
-  return {
-    id: docSnap.id,
-    orderNumber: data.orderNumber,
-    customerId: data.customerId,
-    customerSnapshot,
-    status: data.status,
-    items,
-    totals: data.totals,
-    notes: data.notes,
-    createdAt: toMs(data.createdAt),
-    updatedAt: toMs(data.updatedAt),
-  } as Order
-}
-
-export const getAllOrders = async (): Promise<Order[]> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const q = query(collection(db, COLLECTION_NAME), orderBy('createdAt', 'desc'))
-  const querySnapshot = await getDocs(q)
-
-  // Aqui não vamos bater em getCustomer() para cada pedido (caro).
-  // Só garante fallback pra não quebrar a UI.
-  return querySnapshot.docs.map((docSnap) => {
-    const data = docSnap.data() as any
-    const customerSnapshot =
-      data.customerSnapshot ??
-      ({
-        name: '—',
-        doc: '',
-        phone: '',
-        email: '',
-        address: '',
-      } as Order['customerSnapshot'])
-
-    const items = (Array.isArray(data.items) ? data.items : []).map((it: any) => ({
-      ...it,
-      productSnapshot: it?.productSnapshot ?? {
-        sku: '',
-        name: 'Produto sem snapshot',
-        unit: '',
-        weight: undefined,
-      },
-      total: typeof it?.total === 'number' ? it.total : (it?.qty ?? 0) * (it?.unitPrice ?? 0),
-    }))
-
-    return {
-      id: docSnap.id,
-      orderNumber: data.orderNumber,
-      customerId: data.customerId,
-      customerSnapshot,
-      status: data.status,
-      items,
-      totals: data.totals,
-      notes: data.notes,
-      createdAt: toMs(data.createdAt),
-      updatedAt: toMs(data.updatedAt),
-    } as Order
-  })
-}
-
-export const getOrdersByCustomer = async (customerId: string): Promise<Order[]> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const q = query(
-    collection(db, COLLECTION_NAME),
-    where('customerId', '==', customerId),
-    orderBy('createdAt', 'desc')
-  )
-  const querySnapshot = await getDocs(q)
-
-  return querySnapshot.docs.map((docSnap) => {
-    const data = docSnap.data() as any
-
-    const customerSnapshot =
-      data.customerSnapshot ??
-      ({
-        name: '—',
-        doc: '',
-        phone: '',
-        email: '',
-        address: '',
-      } as Order['customerSnapshot'])
-
-    const items = (Array.isArray(data.items) ? data.items : []).map((it: any) => ({
-      ...it,
-      productSnapshot: it?.productSnapshot ?? {
-        sku: '',
-        name: 'Produto sem snapshot',
-        unit: '',
-        weight: undefined,
-      },
-      total: typeof it?.total === 'number' ? it.total : (it?.qty ?? 0) * (it?.unitPrice ?? 0),
-    }))
-
-    return {
-      id: docSnap.id,
-      orderNumber: data.orderNumber,
-      customerId: data.customerId,
-      customerSnapshot,
-      status: data.status,
-      items,
-      totals: data.totals,
-      notes: data.notes,
-      createdAt: toMs(data.createdAt),
-      updatedAt: toMs(data.updatedAt),
-    } as Order
-  })
-}
-
-export const getOrdersByStatus = async (status: OrderStatus): Promise<Order[]> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const q = query(
-    collection(db, COLLECTION_NAME),
-    where('status', '==', status),
-    orderBy('createdAt', 'desc')
-  )
-  const querySnapshot = await getDocs(q)
-
-  return querySnapshot.docs.map((docSnap) => {
-    const data = docSnap.data() as any
-
-    const customerSnapshot =
-      data.customerSnapshot ??
-      ({
-        name: '—',
-        doc: '',
-        phone: '',
-        email: '',
-        address: '',
-      } as Order['customerSnapshot'])
-
-    const items = (Array.isArray(data.items) ? data.items : []).map((it: any) => ({
-      ...it,
-      productSnapshot: it?.productSnapshot ?? {
-        sku: '',
-        name: 'Produto sem snapshot',
-        unit: '',
-        weight: undefined,
-      },
-      total: typeof it?.total === 'number' ? it.total : (it?.qty ?? 0) * (it?.unitPrice ?? 0),
-    }))
-
-    return {
-      id: docSnap.id,
-      orderNumber: data.orderNumber,
-      customerId: data.customerId,
-      customerSnapshot,
-      status: data.status,
-      items,
-      totals: data.totals,
-      notes: data.notes,
-      createdAt: toMs(data.createdAt),
-      updatedAt: toMs(data.updatedAt),
-    } as Order
-  })
-}
-
-export const searchOrders = async (searchTerm: string): Promise<Order[]> => {
-  const normalizedSearch = searchTerm.toLowerCase().trim()
-  const all = await getAllOrders()
-  if (!normalizedSearch) return all
-
-  return all.filter((order) => {
-    return (
-      order.orderNumber.toLowerCase().includes(normalizedSearch) ||
-      order.status.toLowerCase().includes(normalizedSearch) ||
-      (order.customerSnapshot?.name ?? '').toLowerCase().includes(normalizedSearch)
-    )
-  })
-}
-
-export const updateOrderStatus = async (id: string, status: OrderStatus): Promise<void> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  await setDoc(
-    doc(db, COLLECTION_NAME, id),
+  page.drawText(
+    `Data: ${format(new Date(order.createdAt), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}`,
     {
-      status,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  )
-}
-
-export const updateOrderNotes = async (id: string, notes: string): Promise<void> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  await setDoc(
-    doc(db, COLLECTION_NAME, id),
-    {
-      notes,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  )
-}
-
-export const updateOrderItemQty = async (
-  orderId: string,
-  productId: string,
-  qty: number
-): Promise<void> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const order = await getOrder(orderId)
-  if (!order) throw new Error('Pedido não encontrado')
-
-  const items = order.items.map((item) => {
-    if (item.productId !== productId) return item
-    const unitPrice = item.unitPrice
-    return {
-      ...item,
-      qty,
-      total: qty * unitPrice,
+      x: margin,
+      y,
+      size: 12,
+      font: helveticaFont,
     }
+  )
+
+  y -= 20
+
+  page.drawText(`Status: ${order.status}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
   })
 
-  const subtotal = items.reduce((sum, item) => sum + item.total, 0)
-  const discount = order.totals.discount ?? 0
-  const freight = order.totals.freight ?? 0
-  const total = subtotal - discount + freight
+  y -= 30
 
-  await setDoc(
-    doc(db, COLLECTION_NAME, orderId),
-    {
-      items,
-      totals: { subtotal, discount, freight, total },
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  )
-}
+  // Customer info
+  page.drawText('Cliente', {
+    x: margin,
+    y,
+    size: 14,
+    font: helveticaBold,
+  })
 
-export const removeOrderItem = async (orderId: string, productId: string): Promise<void> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
+  y -= 20
 
-  const db = getDbInstance()
-  const order = await getOrder(orderId)
-  if (!order) throw new Error('Pedido não encontrado')
+  page.drawText(`Nome: ${order.customerSnapshot?.name ?? ''}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+  })
 
-  const items = order.items.filter((item) => item.productId !== productId)
+  y -= 18
 
-  const subtotal = items.reduce((sum, item) => sum + item.total, 0)
-  const discount = order.totals.discount ?? 0
-  const freight = order.totals.freight ?? 0
-  const total = subtotal - discount + freight
+  page.drawText(`Documento: ${order.customerSnapshot?.doc ?? ''}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+  })
 
-  await setDoc(
-    doc(db, COLLECTION_NAME, orderId),
-    {
-      items,
-      totals: { subtotal, discount, freight, total },
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  )
-}
+  y -= 18
 
-export const addOrderItem = async (
-  orderId: string,
-  productId: string,
-  qty: number
-): Promise<void> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
+  page.drawText(`Telefone: ${order.customerSnapshot?.phone ?? ''}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+  })
 
-  const db = getDbInstance()
-  const order = await getOrder(orderId)
-  if (!order) throw new Error('Pedido não encontrado')
+  y -= 18
 
-  const product = await getProduct(productId)
-  if (!product) throw new Error('Produto não encontrado')
+  page.drawText(`Email: ${order.customerSnapshot?.email ?? ''}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+  })
 
-  const existing = order.items.find((i) => i.productId === productId)
+  y -= 18
 
-  let items: any[] = []
-  if (existing) {
-    items = order.items.map((item) => {
-      if (item.productId !== productId) return item
-      const newQty = item.qty + qty
-      return { ...item, qty: newQty, total: newQty * item.unitPrice }
+  page.drawText(`Endereço: ${order.customerSnapshot?.address ?? ''}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+  })
+
+  y -= 30
+
+  // Items table header
+  page.drawText('Itens', {
+    x: margin,
+    y,
+    size: 14,
+    font: helveticaBold,
+  })
+
+  y -= 20
+
+  const colSku = margin
+  const colName = margin + 80
+  const colQty = width - margin - 170
+  const colUnit = width - margin - 120
+  const colPrice = width - margin - 70
+  const colTotal = width - margin
+
+  page.drawText('SKU', { x: colSku, y, size: 10, font: helveticaBold })
+  page.drawText('Produto', { x: colName, y, size: 10, font: helveticaBold })
+  page.drawText('Qtd', { x: colQty, y, size: 10, font: helveticaBold })
+  page.drawText('Und', { x: colUnit, y, size: 10, font: helveticaBold })
+  page.drawText('Preço', { x: colPrice, y, size: 10, font: helveticaBold })
+  page.drawText('Total', { x: colTotal - 30, y, size: 10, font: helveticaBold })
+
+  y -= 12
+
+  // Items
+  for (const item of order.items) {
+    const sku = item.productSnapshot?.sku ?? ''
+    const name = item.productSnapshot?.name ?? ''
+    const qty = item.qty ?? 0
+    const unit = item.productSnapshot?.unit ?? ''
+    const unitPrice = item.unitPrice ?? 0
+    const total = item.total ?? qty * unitPrice
+
+    page.drawText(sku, { x: colSku, y, size: 10, font: helveticaFont })
+    page.drawText(name, {
+      x: colName,
+      y,
+      size: 10,
+      font: helveticaFont,
+      maxWidth: colQty - colName - 10,
     })
-  } else {
-    const unitPrice = (product as any).price ?? 0
-    items = [
-      ...order.items,
-      {
-        productId,
-        qty,
-        unitPrice,
-        total: qty * unitPrice,
-        productSnapshot: {
-          sku: product.sku,
-          name: product.name,
-          unit: product.unit,
-          weight: product.weight,
-        },
-      },
-    ]
+    page.drawText(String(qty), { x: colQty, y, size: 10, font: helveticaFont })
+    page.drawText(unit, { x: colUnit, y, size: 10, font: helveticaFont })
+    page.drawText(unitPrice.toFixed(2), { x: colPrice, y, size: 10, font: helveticaFont })
+    page.drawText(total.toFixed(2), { x: colTotal - 55, y, size: 10, font: helveticaFont })
+
+    y -= 14
+    if (y < margin + 100) break // simples pra não estourar página
   }
 
-  const subtotal = items.reduce((sum, item) => sum + item.total, 0)
-  const discount = order.totals.discount ?? 0
-  const freight = order.totals.freight ?? 0
-  const total = subtotal - discount + freight
+  y -= 20
 
-  await setDoc(
-    doc(db, COLLECTION_NAME, orderId),
-    {
-      items,
-      totals: { subtotal, discount, freight, total },
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  )
+  // Totals
+  page.drawText(`Subtotal: ${(order.totals?.subtotal ?? 0).toFixed(2)}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+  })
+
+  y -= 18
+
+  page.drawText(`Desconto: ${(order.totals?.discount ?? 0).toFixed(2)}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+  })
+
+  y -= 18
+
+  page.drawText(`Frete: ${(order.totals?.freight ?? 0).toFixed(2)}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+  })
+
+  y -= 18
+
+  page.drawText(`Total: ${(order.totals?.total ?? 0).toFixed(2)}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaBold,
+  })
+
+  return await pdfDoc.save()
 }
 
-export const duplicateOrder = async (orderId: string): Promise<string> => {
-  const originalOrder = await getOrder(orderId)
-  if (!originalOrder) throw new Error('Pedido não encontrado')
-
-  const newOrderData: OrderFormData = {
-    customerId: originalOrder.customerId,
-    items: originalOrder.items.map((item: any) => ({
-      productId: item.productId,
-      qty: item.qty,
-      unitPrice: item.unitPrice,
-      productSnapshot: item.productSnapshot,
-      total: item.total,
-    })),
-    discount: originalOrder.totals.discount,
-    freight: originalOrder.totals.freight,
-    notes: originalOrder.notes,
-  }
-
-  return createOrder(newOrderData)
+export function downloadOrderPdf(order: Order, pdfBytes: Uint8Array) {
+  // ✅ FIX: normaliza para evitar conflito de tipagem (ArrayBufferLike/SharedArrayBuffer) no build
+  const bytes = new Uint8Array(pdfBytes)
+  const blob = new Blob([bytes], { type: 'application/pdf' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `Pedido_Sagrado_${order.orderNumber}.pdf`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
