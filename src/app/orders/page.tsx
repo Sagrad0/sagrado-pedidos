@@ -1,184 +1,202 @@
 'use client'
 
-import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Order, OrderStatus } from '@/types'
+import { useEffect, useMemo, useState } from 'react'
 import { getAllOrders, getOrdersByStatus, searchOrders } from '@/lib/db/orders'
+import { Order, OrderStatus } from '@/types'
 
-const statusLabels: Record<OrderStatus, string> = {
-  orcamento: 'Orçamento',
-  pedido: 'Pedido',
-  faturado: 'Faturado',
+function brl(v: number) {
+  const n = Number.isFinite(v) ? v : 0
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n)
 }
 
-const statusColors: Record<OrderStatus, string> = {
-  orcamento: 'bg-yellow-100 text-yellow-800',
-  pedido: 'bg-blue-100 text-blue-800',
-  faturado: 'bg-green-100 text-green-800',
+function fmtDate(ts: number) {
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: '2-digit',
+    }).format(new Date(ts))
+  } catch {
+    return ''
+  }
 }
+
+function statusLabel(s: OrderStatus) {
+  if (s === 'orcamento') return 'Orçamento'
+  if (s === 'pedido') return 'Pedido'
+  if ((s as any) === 'faturado') return 'Faturado'
+  if ((s as any) === 'cancelado') return 'Cancelado'
+  return String(s)
+}
+
+function statusClasses(s: OrderStatus) {
+  if (s === 'orcamento') return 'bg-yellow-100 text-yellow-800 border-yellow-200'
+  if (s === 'pedido') return 'bg-blue-100 text-blue-800 border-blue-200'
+  if ((s as any) === 'faturado') return 'bg-green-100 text-green-800 border-green-200'
+  if ((s as any) === 'cancelado') return 'bg-red-100 text-red-800 border-red-200'
+  return 'bg-gray-100 text-gray-700 border-gray-200'
+}
+
+type Tab = 'todos' | 'orcamento' | 'pedido' | 'faturado'
 
 export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([])
-  const [filteredOrders, setFilteredOrders] = useState<Order[]>([])
-  const [selectedStatus, setSelectedStatus] = useState<OrderStatus | 'all'>('all')
-  const [searchTerm, setSearchTerm] = useState('')
   const [loading, setLoading] = useState(true)
+  const [q, setQ] = useState('')
+  const [tab, setTab] = useState<Tab>('todos')
 
   useEffect(() => {
-    loadOrders()
-  }, [])
+    let alive = true
+    ;(async () => {
+      setLoading(true)
+      try {
+        let data: Order[] = []
 
-  useEffect(() => {
-    let filtered = orders
+        if (tab === 'todos') data = await getAllOrders()
+        else if (tab === 'orcamento') data = await getOrdersByStatus('orcamento')
+        else if (tab === 'pedido') data = await getOrdersByStatus('pedido')
+        else data = await getAllOrders()
 
-    // Filter by status
-    if (selectedStatus !== 'all') {
-      filtered = filtered.filter(order => order.status === selectedStatus)
+        if (q.trim()) {
+          data = await searchOrders(q)
+          if (tab !== 'todos') data = data.filter((o) => o.status === tab)
+        }
+
+        if (alive) setOrders(data)
+      } finally {
+        if (alive) setLoading(false)
+      }
+    })()
+
+    return () => {
+      alive = false
     }
+  }, [q, tab])
 
-    // Filter by search term
-    if (searchTerm.trim()) {
-      const normalizedSearch = searchTerm.toLowerCase()
-      filtered = filtered.filter(
-        (order) =>
-          order.orderNumber.toLowerCase().includes(normalizedSearch) ||
-          order.customerSnapshot.name.toLowerCase().includes(normalizedSearch) ||
-          order.customerSnapshot.phone.includes(searchTerm)
-      )
-    }
-
-    setFilteredOrders(filtered)
-  }, [orders, selectedStatus, searchTerm])
-
-  const loadOrders = async () => {
-    try {
-      const data = await getAllOrders()
-      setOrders(data)
-    } catch (error) {
-      console.error('Error loading orders:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const formatDate = (value: any) => {
-    if (value == null) return '-'
-    // compat: antigo Timestamp do Firebase ou epoch ms
-    const d = (typeof value === 'number')
-      ? new Date(value)
-      : (value?.toDate ? value.toDate() : new Date(value))
-    if (isNaN(d.getTime())) return '-'
-    return d.toLocaleDateString('pt-BR')
-  }
-
-  if (loading) {
-    return <div className="text-center py-8">Carregando...</div>
-  }
+  const headerCounts = useMemo(() => {
+    const total = orders.length
+    const orc = orders.filter((o) => o.status === 'orcamento').length
+    const ped = orders.filter((o) => o.status === 'pedido').length
+    return { total, orc, ped }
+  }, [orders])
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-gray-900">Pedidos</h1>
         <Link
           href="/orders/new"
-          className="btn btn-primary"
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700"
         >
           Novo Pedido
         </Link>
       </div>
 
-      <div className="space-y-4">
-        <div className="card p-4">
-          <input
-            type="text"
-            placeholder="Buscar por número, cliente ou telefone..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="form-input"
-          />
-        </div>
-
-        <div className="card p-4">
-          <div className="flex space-x-2 overflow-x-auto">
-            <button
-              onClick={() => setSelectedStatus('all')}
-              className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${
-                selectedStatus === 'all'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Todos
-            </button>
-            {(['orcamento', 'pedido', 'faturado'] as OrderStatus[]).map((status) => (
-              <button
-                key={status}
-                onClick={() => setSelectedStatus(status)}
-                className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${
-                  selectedStatus === status
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                }`}
-              >
-                {statusLabels[status]}
-              </button>
-            ))}
-          </div>
-        </div>
+      <div className="mt-4">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Buscar por número, cliente ou telefone..."
+          className="w-full border rounded-lg px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
       </div>
 
-      <div className="card overflow-hidden">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Nº Pedido</th>
-              <th>Cliente</th>
-              <th>Telefone</th>
-              <th>Total</th>
-              <th>Status</th>
-              <th>Data</th>
-              <th>Ações</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {filteredOrders.map((order) => (
-              <tr key={order.id}>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                  {order.orderNumber}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {order.customerSnapshot.name}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {order.customerSnapshot.phone}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  R$ {order.totals.total.toFixed(2)}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <span
-                    className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                      statusColors[order.status]
-                    }`}
-                  >
-                    {statusLabels[order.status]}
-                  </span>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {formatDate(order.createdAt)}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <Link
-                    href={`/orders/${order.id}`}
-                    className="text-blue-600 hover:text-blue-900"
-                  >
-                    Ver
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mt-4 flex gap-2 overflow-x-auto no-scrollbar">
+        <button
+          onClick={() => setTab('todos')}
+          className={
+            (tab === 'todos' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800') +
+            ' px-4 py-2 rounded-full font-semibold whitespace-nowrap'
+          }
+        >
+          Todos <span className="opacity-80">({headerCounts.total})</span>
+        </button>
+        <button
+          onClick={() => setTab('orcamento')}
+          className={
+            (tab === 'orcamento' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800') +
+            ' px-4 py-2 rounded-full font-semibold whitespace-nowrap'
+          }
+        >
+          Orçamento <span className="opacity-80">({headerCounts.orc})</span>
+        </button>
+        <button
+          onClick={() => setTab('pedido')}
+          className={
+            (tab === 'pedido' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800') +
+            ' px-4 py-2 rounded-full font-semibold whitespace-nowrap'
+          }
+        >
+          Pedido <span className="opacity-80">({headerCounts.ped})</span>
+        </button>
+        <button
+          onClick={() => setTab('faturado')}
+          className={
+            (tab === 'faturado' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800') +
+            ' px-4 py-2 rounded-full font-semibold whitespace-nowrap'
+          }
+        >
+          Faturado
+        </button>
+      </div>
+
+      <div className="mt-5">
+        {loading ? (
+          <div className="text-gray-500">Carregando...</div>
+        ) : orders.length === 0 ? (
+          <div className="text-gray-500">Nenhum pedido encontrado.</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {orders.map((o) => {
+              const client = o.customerSnapshot?.name ?? '—'
+              const phone = o.customerSnapshot?.phone ?? ''
+              const total = o.totals?.total ?? 0
+
+              return (
+                <Link
+                  key={o.id}
+                  href={`/orders/${o.id}`}
+                  className="block bg-white border rounded-xl p-4 hover:shadow-sm transition"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="text-xs text-gray-500">Nº</div>
+                      <div className="text-lg font-bold text-gray-900">{o.orderNumber}</div>
+                    </div>
+
+                    <span
+                      className={
+                        'text-xs font-bold px-3 py-1 rounded-full border ' +
+                        statusClasses(o.status)
+                      }
+                    >
+                      {statusLabel(o.status)}
+                    </span>
+                  </div>
+
+                  <div className="mt-3">
+                    <div className="text-xs text-gray-500">Cliente</div>
+                    <div className="text-base font-semibold text-gray-900 truncate">{client}</div>
+                    {phone ? (
+                      <div className="text-sm text-gray-600 truncate">{phone}</div>
+                    ) : (
+                      <div className="text-sm text-gray-400">sem telefone</div>
+                    )}
+                  </div>
+
+                    <div className="mt-4 flex items-end justify-between">
+                      <div>
+                        <div className="text-xs text-gray-500">Total</div>
+                        <div className="text-xl font-extrabold text-gray-900">{brl(total)}</div>
+                      </div>
+                      <div className="text-sm text-gray-500">{fmtDate(o.createdAt)}</div>
+                    </div>
+                </Link>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )
