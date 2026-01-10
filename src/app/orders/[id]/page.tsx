@@ -6,6 +6,52 @@ import { Order, OrderStatus } from '@/types'
 import { getOrder, updateOrderStatus, duplicateOrder } from '@/lib/db/orders'
 import { generateOrderPdf } from '@/lib/pdf/generateOrderPdf'
 
+type UnknownRecord = Record<string, unknown>
+
+function isRecord(v: unknown): v is UnknownRecord {
+  return typeof v === 'object' && v !== null
+}
+
+function getItemSkuName(item: unknown): { sku?: string; name?: string; productId?: string } {
+  if (!isRecord(item)) return {}
+
+  const productId = typeof item.productId === 'string' ? item.productId : undefined
+
+  // Prioridade 1: snapshot dentro do item
+  const ps = item.productSnapshot
+  if (isRecord(ps)) {
+    const sku = typeof ps.sku === 'string' ? ps.sku : undefined
+    const name = typeof ps.name === 'string' ? ps.name : undefined
+    if (sku || name) return { sku, name, productId }
+  }
+
+  // Prioridade 2: campos direto no item (legado)
+  const sku2 = typeof item.sku === 'string' ? item.sku : undefined
+  const name2 = typeof item.name === 'string' ? item.name : undefined
+  if (sku2 || name2) return { sku: sku2, name: name2, productId }
+
+  // Prioridade 3: fallback
+  return { productId }
+}
+
+function getItemQty(item: unknown): number {
+  if (!isRecord(item)) return 0
+  const q1 = item.qty
+  if (typeof q1 === 'number') return q1
+  const q2 = item.quantity
+  if (typeof q2 === 'number') return q2
+  return 0
+}
+
+function getItemUnitPrice(item: unknown): number {
+  if (!isRecord(item)) return 0
+  const p1 = item.unitPrice
+  if (typeof p1 === 'number') return p1
+  const p2 = item.price
+  if (typeof p2 === 'number') return p2
+  return 0
+}
+
 function formatDate(value: any) {
   if (!value) return '-'
   const d =
@@ -138,16 +184,25 @@ export default function OrderDetailPage({ params }: { params: { id: string } }) 
             </thead>
 
             <tbody className="bg-white divide-y divide-gray-200">
-              {order.items.map((item) => (
-                <tr key={item.productId}>
-                  <td className="px-4 py-2 text-sm text-gray-900">
-                    {item.product.sku} - {item.product.name}
-                  </td>
-                  <td className="px-4 py-2">{item.quantity}</td>
-                  <td className="px-4 py-2">R$ {item.price.toFixed(2)}</td>
-                  <td className="px-4 py-2">R$ {(item.price * item.quantity).toFixed(2)}</td>
-                </tr>
-              ))}
+              {order.items.map((item, idx) => {
+                const { sku, name, productId } = getItemSkuName(item)
+                const qty = getItemQty(item)
+                const unitPrice = getItemUnitPrice(item)
+                const total = unitPrice * qty
+
+                const label = sku || name ? `${sku ?? ''}${sku && name ? ' - ' : ''}${name ?? ''}` : undefined
+
+                return (
+                  <tr key={`${productId ?? 'item'}-${idx}`}>
+                    <td className="px-4 py-2 text-sm text-gray-900">
+                      {label ? label : <>Produto: {productId ?? '—'}</>}
+                    </td>
+                    <td className="px-4 py-2">{qty}</td>
+                    <td className="px-4 py-2">R$ {unitPrice.toFixed(2)}</td>
+                    <td className="px-4 py-2">R$ {total.toFixed(2)}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -193,7 +248,7 @@ export default function OrderDetailPage({ params }: { params: { id: string } }) 
           </div>
           <div className="flex justify-between">
             <span>Frete:</span>
-            <span>R$ {order.totals.shipping.toFixed(2)}</span>
+            <span>R$ {(order.totals.freight ?? 0).toFixed(2)}</span>
           </div>
           <div className="flex justify-between font-semibold text-gray-900">
             <span>Total:</span>
