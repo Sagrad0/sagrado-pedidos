@@ -1,14 +1,16 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { OrderDraft, OrderItemDraft } from '@/types'
+import { OrderFormData, Product, Customer } from '@/types'
 import { getAllCustomers } from '@/lib/db/customers'
 import { getAllProducts } from '@/lib/db/products'
 import { createOrder } from '@/lib/db/orders'
 
+type OrderItemDraft = OrderFormData['items'][number]
+
 export default function NewOrderPage() {
-  const [customers, setCustomers] = useState<any[]>([])
-  const [products, setProducts] = useState<any[]>([])
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [products, setProducts] = useState<Product[]>([])
   const [items, setItems] = useState<OrderItemDraft[]>([])
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('')
   const [saving, setSaving] = useState(false)
@@ -22,8 +24,8 @@ export default function NewOrderPage() {
     async function fetchData() {
       const cs = await getAllCustomers()
       const ps = await getAllProducts()
-      setCustomers(cs)
-      setProducts(ps)
+      setCustomers(cs as Customer[])
+      setProducts(ps as Product[])
     }
     fetchData()
   }, [])
@@ -31,26 +33,41 @@ export default function NewOrderPage() {
   const filteredCustomers = useMemo(() => {
     const t = customerSearch.toLowerCase()
     return customers.filter((c) =>
-      [c.name, c.phone, c.doc, c.email].filter(Boolean).some((v: string) => v?.toLowerCase().includes(t))
+      [c.name, c.phone, c.doc, c.email]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(t))
     )
   }, [customers, customerSearch])
 
   const filteredProducts = useMemo(() => {
     const t = productSearch.toLowerCase()
     return products.filter((p) =>
-      [p.name, p.sku].some((v: string) => v?.toLowerCase().includes(t))
+      [p.name, p.sku].some((v) => String(v).toLowerCase().includes(t))
     )
   }, [products, productSearch])
 
-  const addItem = (product: any) => {
+  const addItem = (product: Product) => {
     setItems((prev) => {
       const exists = prev.find((i) => i.productId === product.id)
       if (exists) {
         return prev.map((i) =>
-          i.productId === product.id ? { ...i, quantity: i.quantity + 1 } : i
+          i.productId === product.id ? { ...i, qty: i.qty + 1 } : i
         )
       }
-      return [...prev, { productId: product.id, product, quantity: 1, price: product.price }]
+
+      const draft: OrderItemDraft = {
+        productId: product.id,
+        productSnapshot: {
+          sku: product.sku,
+          name: product.name,
+          unit: product.unit,
+          weight: product.weight,
+        },
+        qty: 1,
+        unitPrice: product.price,
+      }
+
+      return [...prev, draft]
     })
   }
 
@@ -59,14 +76,19 @@ export default function NewOrderPage() {
   }
 
   const setItemQty = (productId: string, qty: number) => {
-    setItems((prev) => prev.map((i) => (i.productId === productId ? { ...i, quantity: Math.max(1, qty) } : i)))
+    const next = Number.isFinite(qty) ? qty : 1
+    setItems((prev) =>
+      prev.map((i) =>
+        i.productId === productId ? { ...i, qty: Math.max(1, next) } : i
+      )
+    )
   }
 
   const totals = useMemo(() => {
-    const subtotal = items.reduce((acc, i) => acc + i.price * i.quantity, 0)
-    const shipping = 0
-    const total = subtotal + shipping
-    return { subtotal, shipping, total }
+    const subtotal = items.reduce((acc, i) => acc + i.unitPrice * i.qty, 0)
+    const freight = 0
+    const total = subtotal + freight
+    return { subtotal, freight, total }
   }, [items])
 
   const handleSubmit = async () => {
@@ -74,28 +96,39 @@ export default function NewOrderPage() {
       alert('Selecione um cliente.')
       return
     }
-    setSaving(true)
-    const payload: OrderDraft = {
-      customerId: selectedCustomerId,
-      items: items.map((i) => ({ productId: i.productId, quantity: i.quantity, price: i.price })),
-      status: 'orcamento',
+    if (items.length === 0) {
+      alert('Adicione ao menos 1 item.')
+      return
     }
+
+    setSaving(true)
+
+    const payload: OrderFormData = {
+      customerId: selectedCustomerId,
+      items: items.map((i) => ({
+        productId: i.productId,
+        productSnapshot: i.productSnapshot,
+        qty: i.qty,
+        unitPrice: i.unitPrice,
+      })),
+      discount: 0,
+      freight: 0,
+      notes: '',
+    }
+
     const id = await createOrder(payload)
+
     setSaving(false)
     window.location.href = `/orders/${id}`
   }
 
-  const selectedCustomer = customers.find(c => c.id === selectedCustomerId)
+  const selectedCustomer = customers.find((c) => c.id === selectedCustomerId)
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Novo Pedido</h1>
-        <button
-          onClick={handleSubmit}
-          disabled={saving}
-          className="btn btn-primary"
-        >
+        <button onClick={handleSubmit} disabled={saving} className="btn btn-primary">
           {saving ? 'Salvando...' : 'Salvar Pedido'}
         </button>
       </div>
@@ -105,6 +138,7 @@ export default function NewOrderPage() {
           {/* Cliente */}
           <div className="card p-6">
             <h2 className="text-lg font-semibold mb-4">Cliente</h2>
+
             <div className="relative">
               <input
                 type="text"
@@ -117,11 +151,13 @@ export default function NewOrderPage() {
                 onFocus={() => setShowCustomerDropdown(true)}
                 className="form-input"
               />
+
               {showCustomerDropdown && (
                 <div className="absolute z-20 mt-2 w-full max-h-64 overflow-auto no-scrollbar bg-white border rounded-lg shadow">
                   {filteredCustomers.length === 0 && (
                     <div className="p-3 text-sm text-gray-500">Nenhum cliente encontrado</div>
                   )}
+
                   {filteredCustomers.map((c) => (
                     <button
                       key={c.id}
@@ -141,12 +177,27 @@ export default function NewOrderPage() {
                 </div>
               )}
             </div>
+
             {selectedCustomer && (
               <div className="mt-3 text-sm text-gray-700">
-                <div><strong>Telefone:</strong> {selectedCustomer.phone}</div>
-                {selectedCustomer.doc && <div><strong>CPF/CNPJ:</strong> {selectedCustomer.doc}</div>}
-                {selectedCustomer.email && <div><strong>Email:</strong> {selectedCustomer.email}</div>}
-                {selectedCustomer.address && <div><strong>Endereço:</strong> {selectedCustomer.address}</div>}
+                <div>
+                  <strong>Telefone:</strong> {selectedCustomer.phone}
+                </div>
+                {selectedCustomer.doc && (
+                  <div>
+                    <strong>CPF/CNPJ:</strong> {selectedCustomer.doc}
+                  </div>
+                )}
+                {selectedCustomer.email && (
+                  <div>
+                    <strong>Email:</strong> {selectedCustomer.email}
+                  </div>
+                )}
+                {selectedCustomer.address && (
+                  <div>
+                    <strong>Endereço:</strong> {selectedCustomer.address}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -154,6 +205,7 @@ export default function NewOrderPage() {
           {/* Produtos */}
           <div className="card p-6">
             <h2 className="text-lg font-semibold mb-4">Produtos</h2>
+
             <div className="relative">
               <input
                 type="text"
@@ -166,11 +218,13 @@ export default function NewOrderPage() {
                 onFocus={() => setShowProductDropdown(true)}
                 className="form-input"
               />
+
               {showProductDropdown && (
                 <div className="absolute z-20 mt-2 w-full max-h-64 overflow-auto no-scrollbar bg-white border rounded-lg shadow">
                   {filteredProducts.length === 0 && (
                     <div className="p-3 text-sm text-gray-500">Nenhum produto encontrado</div>
                   )}
+
                   {filteredProducts.map((p) => (
                     <button
                       key={p.id}
@@ -181,9 +235,12 @@ export default function NewOrderPage() {
                       }}
                       className="w-full text-left px-3 py-2 hover:bg-gray-50"
                     >
-                      <div className="font-medium">{p.sku} — {p.name}</div>
+                      <div className="font-medium">
+                        {p.sku} — {p.name}
+                      </div>
                       <div className="text-xs text-gray-600">
-                        {p.unit}{p.weight ? ` • ${p.weight}g` : ''} • R$ {p.price.toFixed(2)}
+                        {p.unit}
+                        {p.weight ? ` • ${p.weight}g` : ''} • R$ {p.price.toFixed(2)}
                       </div>
                     </button>
                   ))}
@@ -202,25 +259,32 @@ export default function NewOrderPage() {
                     <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Ações</th>
                   </tr>
                 </thead>
+
                 <tbody className="bg-white divide-y divide-gray-200">
                   {items.map((item) => (
                     <tr key={item.productId}>
                       <td className="px-4 py-2 text-sm text-gray-900">
-                        {item.product.sku} - {item.product.name}
+                        {item.productSnapshot?.sku} - {item.productSnapshot?.name}
                       </td>
+
                       <td className="px-4 py-2">
                         <input
                           type="number"
                           min={1}
-                          value={item.quantity}
+                          value={item.qty}
                           onChange={(e) => setItemQty(item.productId, Number(e.target.value))}
                           className="w-20 form-input"
                         />
                       </td>
-                      <td className="px-4 py-2">R$ {item.price.toFixed(2)}</td>
-                      <td className="px-4 py-2">R$ {(item.price * item.quantity).toFixed(2)}</td>
+
+                      <td className="px-4 py-2">R$ {item.unitPrice.toFixed(2)}</td>
+                      <td className="px-4 py-2">R$ {(item.unitPrice * item.qty).toFixed(2)}</td>
+
                       <td className="px-4 py-2">
-                        <button onClick={() => removeItem(item.productId)} className="text-red-600 hover:text-red-800">
+                        <button
+                          onClick={() => removeItem(item.productId)}
+                          className="text-red-600 hover:text-red-800"
+                        >
                           Remover
                         </button>
                       </td>
@@ -236,15 +300,18 @@ export default function NewOrderPage() {
         <div className="space-y-6">
           <div className="card p-6">
             <h2 className="text-lg font-semibold mb-4">Resumo</h2>
+
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <span>Subtotal:</span>
                 <span>R$ {totals.subtotal.toFixed(2)}</span>
               </div>
+
               <div className="flex justify-between">
                 <span>Frete:</span>
-                <span>R$ {totals.shipping.toFixed(2)}</span>
+                <span>R$ {totals.freight.toFixed(2)}</span>
               </div>
+
               <div className="flex justify-between font-semibold text-gray-900">
                 <span>Total:</span>
                 <span>R$ {totals.total.toFixed(2)}</span>
