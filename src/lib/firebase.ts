@@ -1,6 +1,7 @@
 'use client'
 
 import { initializeApp, getApps } from 'firebase/app'
+import { getFirestore, type Firestore } from 'firebase/firestore'
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
@@ -14,6 +15,22 @@ const firebaseConfig = {
 function getApp() {
   if (!getApps().length) initializeApp(firebaseConfig)
   return getApps()[0]
+}
+
+// ---- FIRESTORE INSTANCE (sync, cached) ----
+let _db: Firestore | null = null
+
+/**
+ * Returns a cached Firestore instance.
+ *
+ * Note: This module is client-only ("use client"), so this is safe to call
+ * from client components and client-side DB helpers.
+ */
+export function getDbInstance(): Firestore {
+  if (_db) return _db
+  const app = getApp()
+  _db = getFirestore(app)
+  return _db
 }
 
 // ---- AUTH (lazy import) ----
