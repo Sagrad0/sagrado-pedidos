@@ -26,8 +26,13 @@ export const createOrder = async (data: OrderFormData): Promise<string> => {
   const db = getDbInstance()
   const orderNumber = await generateOrderId()
 
+  // ✅ defaults para evitar undefined
+  const discount = data.discount ?? 0
+  const freight = data.freight ?? 0
+  const notes = data.notes ?? ''
+
   const subtotal = data.items.reduce((sum, item) => sum + item.qty * item.unitPrice, 0)
-  const total = subtotal - data.discount + data.freight
+  const total = subtotal - discount + freight
 
   const orderData: Omit<Order, 'id'> = {
     orderNumber,
@@ -40,11 +45,11 @@ export const createOrder = async (data: OrderFormData): Promise<string> => {
     })),
     totals: {
       subtotal,
-      discount: data.discount,
-      freight: data.freight,
+      discount,
+      freight,
       total,
     },
-    notes: data.notes,
+    notes,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }
@@ -167,7 +172,6 @@ export const getOrdersByStatus = async (status: OrderStatus): Promise<Order[]> =
 /**
  * ✅ Export que a página /orders está pedindo
  * Busca simples: número do pedido e observações (case-insensitive).
- * (Pra buscar por nome do cliente, a gente teria que enriquecer com customers.)
  */
 export const searchOrders = async (searchTerm: string): Promise<Order[]> => {
   const term = (searchTerm || '').toLowerCase().trim()
