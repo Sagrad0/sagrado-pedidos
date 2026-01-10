@@ -104,3 +104,16 @@ export const searchProducts = async (searchTerm: string): Promise<Product[]> => 
       product.name.toLowerCase().includes(normalizedSearch)
   )
 }
+
+// --- Helpers used by UI pages ---
+
+/** Returns only active products (default behavior for order creation). */
+export const getActiveProducts = async (): Promise<Product[]> => {
+  const all = await getAllProducts()
+  return all.filter((p) => p.active)
+}
+
+/** Toggle active flag for a given product. */
+export const toggleProductActive = async (id: string, currentActive: boolean): Promise<void> => {
+  await updateProduct(id, { active: !currentActive })
+}
