@@ -1,5 +1,5 @@
 import { Order, OrderFormData, OrderStatus } from '@/types'
-import { getDbInstance } from '@/lib/firebase'
+import { getDbInstance, ensureAnonAuth, ensureFirestorePersistence } from '@/lib/firebase'
 import {
   addDoc,
   collection,
@@ -20,17 +20,20 @@ import { generateOrderId } from './counters'
 const COLLECTION_NAME = 'orders'
 
 export const createOrder = async (data: OrderFormData): Promise<string> => {
-  const db = getDbInstance()
-  const orderId = await generateOrderId()
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
 
-  // Calculate totals
+  const db = getDbInstance()
+  const orderNumber = await generateOrderId()
+
   const subtotal = data.items.reduce((sum, item) => sum + item.qty * item.unitPrice, 0)
   const total = subtotal - data.discount + data.freight
 
   const orderData: Omit<Order, 'id'> = {
-    orderNumber: orderId,
+    orderNumber,
     customerId: data.customerId,
-    status: 'draft' as OrderStatus,
+    // ✅ Mantém alinhado com a UI que usa label "orcamento"
+    status: 'orcamento' as OrderStatus,
     items: data.items.map((item) => ({
       ...item,
       total: item.qty * item.unitPrice,
@@ -56,15 +59,16 @@ export const createOrder = async (data: OrderFormData): Promise<string> => {
 }
 
 export const getOrder = async (id: string): Promise<Order | null> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
   const db = getDbInstance()
   const docRef = doc(db, COLLECTION_NAME, id)
   const docSnap = await getDoc(docRef)
 
-  if (!docSnap.exists()) {
-    return null
-  }
+  if (!docSnap.exists()) return null
 
-  const data = docSnap.data()
+  const data = docSnap.data() as any
 
   return {
     id: docSnap.id,
@@ -80,12 +84,15 @@ export const getOrder = async (id: string): Promise<Order | null> => {
 }
 
 export const getAllOrders = async (): Promise<Order[]> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
   const db = getDbInstance()
   const q = query(collection(db, COLLECTION_NAME), orderBy('createdAt', 'desc'))
   const querySnapshot = await getDocs(q)
 
   return querySnapshot.docs.map((docSnap) => {
-    const data = docSnap.data()
+    const data = docSnap.data() as any
     return {
       id: docSnap.id,
       orderNumber: data.orderNumber,
@@ -101,6 +108,9 @@ export const getAllOrders = async (): Promise<Order[]> => {
 }
 
 export const getOrdersByCustomer = async (customerId: string): Promise<Order[]> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
   const db = getDbInstance()
   const q = query(
     collection(db, COLLECTION_NAME),
@@ -110,7 +120,7 @@ export const getOrdersByCustomer = async (customerId: string): Promise<Order[]> 
   const querySnapshot = await getDocs(q)
 
   return querySnapshot.docs.map((docSnap) => {
-    const data = docSnap.data()
+    const data = docSnap.data() as any
     return {
       id: docSnap.id,
       orderNumber: data.orderNumber,
@@ -125,7 +135,56 @@ export const getOrdersByCustomer = async (customerId: string): Promise<Order[]> 
   })
 }
 
+/** ✅ Export que a página /orders está pedindo */
+export const getOrdersByStatus = async (status: OrderStatus): Promise<Order[]> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
+  const db = getDbInstance()
+  const q = query(
+    collection(db, COLLECTION_NAME),
+    where('status', '==', status),
+    orderBy('createdAt', 'desc')
+  )
+  const querySnapshot = await getDocs(q)
+
+  return querySnapshot.docs.map((docSnap) => {
+    const data = docSnap.data() as any
+    return {
+      id: docSnap.id,
+      orderNumber: data.orderNumber,
+      customerId: data.customerId,
+      status: data.status,
+      items: data.items,
+      totals: data.totals,
+      notes: data.notes,
+      createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt,
+      updatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : data.updatedAt,
+    } as Order
+  })
+}
+
+/**
+ * ✅ Export que a página /orders está pedindo
+ * Busca simples: número do pedido e observações (case-insensitive).
+ * (Pra buscar por nome do cliente, a gente teria que enriquecer com customers.)
+ */
+export const searchOrders = async (searchTerm: string): Promise<Order[]> => {
+  const term = (searchTerm || '').toLowerCase().trim()
+  const all = await getAllOrders()
+  if (!term) return all
+
+  return all.filter((o) => {
+    const orderNumber = (o.orderNumber || '').toLowerCase()
+    const notes = (o.notes || '').toLowerCase()
+    return orderNumber.includes(term) || notes.includes(term)
+  })
+}
+
 export const updateOrderStatus = async (id: string, status: OrderStatus): Promise<void> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
   const db = getDbInstance()
   const docRef = doc(db, COLLECTION_NAME, id)
 
@@ -140,10 +199,12 @@ export const updateOrderStatus = async (id: string, status: OrderStatus): Promis
 }
 
 export const updateOrder = async (id: string, data: Partial<OrderFormData>): Promise<void> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
   const db = getDbInstance()
   const docRef = doc(db, COLLECTION_NAME, id)
 
-  // Recalculate totals if items/discount/freight changed
   let totalsUpdate: any = {}
 
   if (data.items || typeof data.discount === 'number' || typeof data.freight === 'number') {
@@ -184,8 +245,12 @@ export const updateOrder = async (id: string, data: Partial<OrderFormData>): Pro
 }
 
 export const deleteOrder = async (id: string): Promise<void> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
   const db = getDbInstance()
   const docRef = doc(db, COLLECTION_NAME, id)
+
   await setDoc(
     docRef,
     {
@@ -199,7 +264,7 @@ export const deleteOrder = async (id: string): Promise<void> => {
 export const enrichOrder = async (order: Order) => {
   const customer = await getCustomer(order.customerId)
   const enrichedItems = await Promise.all(
-    order.items.map(async (item) => {
+    order.items.map(async (item: any) => {
       const product = await getProduct(item.productId)
       return {
         ...item,
@@ -207,6 +272,7 @@ export const enrichOrder = async (order: Order) => {
       }
     })
   )
+
   return {
     ...order,
     customer,
@@ -215,12 +281,15 @@ export const enrichOrder = async (order: Order) => {
 }
 
 export const getLatestOrders = async (count = 10): Promise<Order[]> => {
+  await ensureFirestorePersistence()
+  await ensureAnonAuth()
+
   const db = getDbInstance()
   const q = query(collection(db, COLLECTION_NAME), orderBy('createdAt', 'desc'), limit(count))
   const querySnapshot = await getDocs(q)
 
   return querySnapshot.docs.map((docSnap) => {
-    const data = docSnap.data()
+    const data = docSnap.data() as any
     return {
       id: docSnap.id,
       orderNumber: data.orderNumber,
@@ -241,7 +310,7 @@ export const duplicateOrder = async (orderId: string): Promise<string> => {
 
   const newOrderData: OrderFormData = {
     customerId: originalOrder.customerId,
-    items: originalOrder.items.map((item) => ({
+    items: originalOrder.items.map((item: any) => ({
       productId: item.productId,
       qty: item.qty,
       unitPrice: item.unitPrice,
