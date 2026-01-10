@@ -6,7 +6,6 @@ import {
   doc,
   getDoc,
   getDocs,
-  limit,
   orderBy,
   query,
   serverTimestamp,
@@ -19,6 +18,65 @@ import { generateOrderId } from './counters'
 
 const COLLECTION_NAME = 'orders'
 
+/** Converte Timestamp/number para epoch ms */
+const toMs = (v: any): number => {
+  if (v == null) return Date.now()
+  if (typeof v === 'number') return v
+  if (v?.toMillis) return v.toMillis()
+  if (v?.toDate) return v.toDate().getTime()
+  return Date.now()
+}
+
+/** Garante snapshots obrigatórios para não quebrar UI */
+const ensureSnapshots = async (data: any) => {
+  // Customer snapshot
+  let customerSnapshot = data.customerSnapshot
+  if (!customerSnapshot && data.customerId) {
+    try {
+      const c = await getCustomer(data.customerId)
+      if (c) {
+        customerSnapshot = {
+          name: c.name,
+          doc: c.doc,
+          phone: c.phone,
+          email: c.email,
+          address: c.address,
+        }
+      }
+    } catch {
+      // silencioso: cai pro fallback abaixo
+    }
+  }
+
+  if (!customerSnapshot) {
+    customerSnapshot = {
+      name: '—',
+      doc: '',
+      phone: '',
+      email: '',
+      address: '',
+    }
+  }
+
+  // Items snapshot (produto)
+  const items = Array.isArray(data.items) ? data.items : []
+  const fixedItems = items.map((it: any) => {
+    const ps = it?.productSnapshot
+    return {
+      ...it,
+      productSnapshot: ps ?? {
+        sku: '',
+        name: 'Produto sem snapshot',
+        unit: '',
+        weight: undefined,
+      },
+      total: typeof it?.total === 'number' ? it.total : (it?.qty ?? 0) * (it?.unitPrice ?? 0),
+    }
+  })
+
+  return { customerSnapshot, items: fixedItems }
+}
+
 export const createOrder = async (data: OrderFormData): Promise<string> => {
   await ensureFirestorePersistence()
   await ensureAnonAuth()
@@ -26,11 +84,9 @@ export const createOrder = async (data: OrderFormData): Promise<string> => {
   const db = getDbInstance()
   const orderNumber = await generateOrderId()
 
-  // ✅ snapshot do cliente (a UI depende disso em listas e PDF)
   const customer = await getCustomer(data.customerId)
   if (!customer) throw new Error('Cliente não encontrado para este pedido')
 
-  // ✅ defaults para evitar undefined
   const discount = data.discount ?? 0
   const freight = data.freight ?? 0
   const notes = data.notes ?? ''
@@ -48,18 +104,12 @@ export const createOrder = async (data: OrderFormData): Promise<string> => {
       email: customer.email,
       address: customer.address,
     },
-    // ✅ Mantém alinhado com a UI que usa label "orcamento"
     status: 'orcamento' as OrderStatus,
     items: data.items.map((item) => ({
       ...item,
       total: item.qty * item.unitPrice,
     })),
-    totals: {
-      subtotal,
-      discount,
-      freight,
-      total,
-    },
+    totals: { subtotal, discount, freight, total },
     notes,
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -85,17 +135,19 @@ export const getOrder = async (id: string): Promise<Order | null> => {
   if (!docSnap.exists()) return null
 
   const data = docSnap.data() as any
+  const { customerSnapshot, items } = await ensureSnapshots(data)
 
   return {
     id: docSnap.id,
     orderNumber: data.orderNumber,
     customerId: data.customerId,
+    customerSnapshot,
     status: data.status,
-    items: data.items,
+    items,
     totals: data.totals,
     notes: data.notes,
-    createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt,
-    updatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : data.updatedAt,
+    createdAt: toMs(data.createdAt),
+    updatedAt: toMs(data.updatedAt),
   } as Order
 }
 
@@ -107,18 +159,42 @@ export const getAllOrders = async (): Promise<Order[]> => {
   const q = query(collection(db, COLLECTION_NAME), orderBy('createdAt', 'desc'))
   const querySnapshot = await getDocs(q)
 
+  // Aqui não vamos bater em getCustomer() para cada pedido (caro).
+  // Só garante fallback pra não quebrar a UI.
   return querySnapshot.docs.map((docSnap) => {
     const data = docSnap.data() as any
+    const customerSnapshot =
+      data.customerSnapshot ??
+      ({
+        name: '—',
+        doc: '',
+        phone: '',
+        email: '',
+        address: '',
+      } as Order['customerSnapshot'])
+
+    const items = (Array.isArray(data.items) ? data.items : []).map((it: any) => ({
+      ...it,
+      productSnapshot: it?.productSnapshot ?? {
+        sku: '',
+        name: 'Produto sem snapshot',
+        unit: '',
+        weight: undefined,
+      },
+      total: typeof it?.total === 'number' ? it.total : (it?.qty ?? 0) * (it?.unitPrice ?? 0),
+    }))
+
     return {
       id: docSnap.id,
       orderNumber: data.orderNumber,
       customerId: data.customerId,
+      customerSnapshot,
       status: data.status,
-      items: data.items,
+      items,
       totals: data.totals,
       notes: data.notes,
-      createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt,
-      updatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : data.updatedAt,
+      createdAt: toMs(data.createdAt),
+      updatedAt: toMs(data.updatedAt),
     } as Order
   })
 }
@@ -137,16 +213,39 @@ export const getOrdersByCustomer = async (customerId: string): Promise<Order[]> 
 
   return querySnapshot.docs.map((docSnap) => {
     const data = docSnap.data() as any
+
+    const customerSnapshot =
+      data.customerSnapshot ??
+      ({
+        name: '—',
+        doc: '',
+        phone: '',
+        email: '',
+        address: '',
+      } as Order['customerSnapshot'])
+
+    const items = (Array.isArray(data.items) ? data.items : []).map((it: any) => ({
+      ...it,
+      productSnapshot: it?.productSnapshot ?? {
+        sku: '',
+        name: 'Produto sem snapshot',
+        unit: '',
+        weight: undefined,
+      },
+      total: typeof it?.total === 'number' ? it.total : (it?.qty ?? 0) * (it?.unitPrice ?? 0),
+    }))
+
     return {
       id: docSnap.id,
       orderNumber: data.orderNumber,
       customerId: data.customerId,
+      customerSnapshot,
       status: data.status,
-      items: data.items,
+      items,
       totals: data.totals,
       notes: data.notes,
-      createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt,
-      updatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : data.updatedAt,
+      createdAt: toMs(data.createdAt),
+      updatedAt: toMs(data.updatedAt),
     } as Order
   })
 }
@@ -165,30 +264,53 @@ export const getOrdersByStatus = async (status: OrderStatus): Promise<Order[]> =
 
   return querySnapshot.docs.map((docSnap) => {
     const data = docSnap.data() as any
+
+    const customerSnapshot =
+      data.customerSnapshot ??
+      ({
+        name: '—',
+        doc: '',
+        phone: '',
+        email: '',
+        address: '',
+      } as Order['customerSnapshot'])
+
+    const items = (Array.isArray(data.items) ? data.items : []).map((it: any) => ({
+      ...it,
+      productSnapshot: it?.productSnapshot ?? {
+        sku: '',
+        name: 'Produto sem snapshot',
+        unit: '',
+        weight: undefined,
+      },
+      total: typeof it?.total === 'number' ? it.total : (it?.qty ?? 0) * (it?.unitPrice ?? 0),
+    }))
+
     return {
       id: docSnap.id,
       orderNumber: data.orderNumber,
       customerId: data.customerId,
+      customerSnapshot,
       status: data.status,
-      items: data.items,
+      items,
       totals: data.totals,
       notes: data.notes,
-      createdAt: data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt,
-      updatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : data.updatedAt,
+      createdAt: toMs(data.createdAt),
+      updatedAt: toMs(data.updatedAt),
     } as Order
   })
 }
 
 export const searchOrders = async (searchTerm: string): Promise<Order[]> => {
   const normalizedSearch = searchTerm.toLowerCase().trim()
-
   const all = await getAllOrders()
   if (!normalizedSearch) return all
 
   return all.filter((order) => {
     return (
       order.orderNumber.toLowerCase().includes(normalizedSearch) ||
-      order.status.toLowerCase().includes(normalizedSearch)
+      order.status.toLowerCase().includes(normalizedSearch) ||
+      (order.customerSnapshot?.name ?? '').toLowerCase().includes(normalizedSearch)
     )
   })
 }
@@ -357,6 +479,7 @@ export const duplicateOrder = async (orderId: string): Promise<string> => {
       qty: item.qty,
       unitPrice: item.unitPrice,
       productSnapshot: item.productSnapshot,
+      total: item.total,
     })),
     discount: originalOrder.totals.discount,
     freight: originalOrder.totals.freight,
