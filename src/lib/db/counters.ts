@@ -1,36 +1,34 @@
-import { OrderCounter } from '@/types'
 import { getDbInstance, ensureAnonAuth, ensureFirestorePersistence } from '@/lib/firebase'
-import { doc, runTransaction } from 'firebase/firestore'
+import { doc, runTransaction, serverTimestamp } from 'firebase/firestore'
 
-// Get current yearMonth in format YYYYMM
-const getCurrentYearMonth = (): string => {
-  const now = new Date()
-  const year = now.getFullYear()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  return `${year}${month}`
-}
-
-export const getNextOrderNumber = async (): Promise<string> => {
+/**
+ * Gera um número incremental de pedido no Firestore.
+ * Salva em: counters/orders -> { value: number }
+ * Retorna formato: PED-000001
+ */
+export async function generateOrderId(): Promise<string> {
   await ensureFirestorePersistence()
   await ensureAnonAuth()
 
-  const yearMonth = getCurrentYearMonth()
   const db = getDbInstance()
-  const counterRef = doc(db, 'meta', `orderCounter_${yearMonth}`)
+  const ref = doc(db, 'counters', 'orders')
 
-  const nextSeq = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(counterRef)
-    const current = snap.exists() ? (snap.data() as OrderCounter) : null
-    const seq = (current?.seq ?? 0) + 1
-    tx.set(counterRef, { yearMonth, seq }, { merge: true })
-    return seq
+  const nextNumber = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref)
+    const current = snap.exists() ? Number((snap.data() as any)?.value ?? 0) : 0
+    const next = current + 1
+
+    tx.set(
+      ref,
+      {
+        value: next,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    )
+
+    return next
   })
 
-  const sequence = String(nextSeq).padStart(4, '0')
-  return `SAG-${yearMonth}-${sequence}`
-}
-
-export const getOrderCounter = async (): Promise<OrderCounter | null> => {
-  // Not used in the UI right now; keep for completeness if needed later.
-  return null
+  return `PED-${String(nextNumber).padStart(6, '0')}`
 }
