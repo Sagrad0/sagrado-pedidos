@@ -1,258 +1,487 @@
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 import { Order } from '@/types'
-import { format } from 'date-fns'
-import { ptBR } from 'date-fns/locale'
 
-export async function generateOrderPdf(order: Order): Promise<Uint8Array> {
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(value || 0)
+}
+
+function formatDate(ts: number) {
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(ts))
+  } catch {
+    return ''
+  }
+}
+
+export async function generateOrderPdf(order: Order) {
   const pdfDoc = await PDFDocument.create()
-  const page = pdfDoc.addPage([595.28, 841.89]) // A4 size
-  
+  const page = pdfDoc.addPage([595.28, 841.89]) // A4
   const { width, height } = page.getSize()
+
   const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica)
   const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-  
-  // Colors
-  const black = rgb(0, 0, 0)
-  const gray = rgb(0.4, 0.4, 0.4)
-  const lightGray = rgb(0.9, 0.9, 0.9)
-  
-  // Margins
-  const margin = 50
-  const contentWidth = width - margin * 2
-  
+
+  const margin = 40
   let y = height - margin
-  
+
   // Header
-  page.drawText('SAGRADO', {
+  page.drawText('SAGRADO - Pedido', {
     x: margin,
-    y: y,
-    size: 24,
+    y,
+    size: 18,
     font: helveticaBold,
-    color: black,
+    color: rgb(0.2, 0.2, 0.2),
   })
-  
+
+  y -= 28
+
   page.drawText(`Pedido: ${order.orderNumber}`, {
-    x: width - margin - 150,
-    y: y,
-    size: 12,
-    font: helveticaFont,
-    color: gray,
-  })
-  
-  y -= 30
-  
-  const orderDate = (typeof (order as any).createdAt === 'number')
-    ? new Date((order as any).createdAt)
-    : ((order as any).createdAt?.toDate ? (order as any).createdAt.toDate() : new Date())
-  page.drawText(`Data: ${format(orderDate, 'dd/MM/yyyy', { locale: ptBR })}`, {
-    x: width - margin - 150,
-    y: y,
-    size: 12,
-    font: helveticaFont,
-    color: gray,
-  })
-  
-  y -= 40
-  
-  // Customer Section
-  page.drawText('Cliente:', {
     x: margin,
-    y: y,
-    size: 14,
-    font: helveticaBold,
-    color: black,
+    y,
+    size: 12,
+    font: helveticaFont,
+    color: rgb(0.2, 0.2, 0.2),
   })
-  
-  y -= 20
-  
-  const customerLines = []
-  customerLines.push(`Nome: ${order.customerSnapshot.name}`)
-  if (order.customerSnapshot.doc) {
-    customerLines.push(`CPF/CNPJ: ${order.customerSnapshot.doc}`)
-  }
-  customerLines.push(`Telefone: ${order.customerSnapshot.phone}`)
-  if (order.customerSnapshot.email) {
-    customerLines.push(`Email: ${order.customerSnapshot.email}`)
-  }
-  if (order.customerSnapshot.address) {
-    customerLines.push(`Endereço: ${order.customerSnapshot.address}`)
-  }
-  
-  customerLines.forEach(line => {
-    page.drawText(line, {
-      x: margin,
-      y: y,
-      size: 11,
-      font: helveticaFont,
-      color: gray,
-    })
-    y -= 15
+
+  y -= 16
+
+  page.drawText(`Status: ${order.status}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+    color: rgb(0.2, 0.2, 0.2),
   })
-  
-  y -= 20
-  
-  // Items Table Header
-  const tableTopY = y
-  const colWidths = [80, 200, 60, 80, 80]
-  const colX = [margin, margin + colWidths[0], margin + colWidths[0] + colWidths[1], 
-                margin + colWidths[0] + colWidths[1] + colWidths[2], 
-                margin + colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3]]
-  
-  // Table header background
+
+  y -= 16
+
+  page.drawText(`Criado em: ${formatDate(order.createdAt)}`, {
+    x: margin,
+    y,
+    size: 12,
+    font: helveticaFont,
+    color: rgb(0.2, 0.2, 0.2),
+  })
+
+  y -= 22
+
+  // Customer box
   page.drawRectangle({
     x: margin,
-    y: y - 20,
-    width: contentWidth,
-    height: 20,
-    color: lightGray,
+    y: y - 70,
+    width: width - margin * 2,
+    height: 70,
+    borderColor: rgb(0.85, 0.85, 0.85),
+    borderWidth: 1,
   })
-  
-  const headers = ['SKU', 'Produto', 'Qtd', 'Preço', 'Total']
-  headers.forEach((header, i) => {
-    page.drawText(header, {
-      x: colX[i] + 5,
-      y: y - 15,
-      size: 10,
-      font: helveticaBold,
-      color: black,
-    })
+
+  const customerName = order.customerSnapshot?.name || ''
+  const customerDoc = order.customerSnapshot?.doc || ''
+  const customerPhone = order.customerSnapshot?.phone || ''
+  const customerEmail = order.customerSnapshot?.email || ''
+  const customerAddress = order.customerSnapshot?.address || ''
+
+  page.drawText('Cliente', {
+    x: margin + 10,
+    y: y - 18,
+    size: 12,
+    font: helveticaBold,
+    color: rgb(0.2, 0.2, 0.2),
   })
-  
-  y -= 25
-  
-  // Items
-  order.items.forEach((item, index) => {
-    // Alternate row background
-    if (index % 2 === 1) {
-      page.drawRectangle({
-        x: margin,
-        y: y - 15,
-        width: contentWidth,
-        height: 15,
-        color: rgb(0.97, 0.97, 0.97),
-      })
-    }
-    
-    page.drawText(item.productSnapshot.sku, {
-      x: colX[0] + 5,
-      y: y - 10,
-      size: 9,
-      font: helveticaFont,
-      color: black,
-    })
-    
-    page.drawText(item.productSnapshot.name, {
-      x: colX[1] + 5,
-      y: y - 10,
-      size: 9,
-      font: helveticaFont,
-      color: black,
-    })
-    
-    page.drawText(String(item.qty), {
-      x: colX[2] + 5,
-      y: y - 10,
-      size: 9,
-      font: helveticaFont,
-      color: black,
-    })
-    
-    page.drawText(`R$ ${item.unitPrice.toFixed(2)}`, {
-      x: colX[3] + 5,
-      y: y - 10,
-      size: 9,
-      font: helveticaFont,
-      color: black,
-    })
-    
-    page.drawText(`R$ ${item.total.toFixed(2)}`, {
-      x: colX[4] + 5,
-      y: y - 10,
-      size: 9,
-      font: helveticaFont,
-      color: black,
-    })
-    
-    y -= 15
+
+  page.drawText(`${customerName}`, {
+    x: margin + 10,
+    y: y - 35,
+    size: 11,
+    font: helveticaFont,
+    color: rgb(0.2, 0.2, 0.2),
   })
-  
-  // Table bottom line
+
+  page.drawText(`Documento: ${customerDoc}`, {
+    x: margin + 10,
+    y: y - 50,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.35, 0.35, 0.35),
+  })
+
+  page.drawText(`Telefone: ${customerPhone}`, {
+    x: margin + 200,
+    y: y - 50,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.35, 0.35, 0.35),
+  })
+
+  page.drawText(`Email: ${customerEmail}`, {
+    x: margin + 10,
+    y: y - 64,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.35, 0.35, 0.35),
+  })
+
+  page.drawText(`Endereço: ${customerAddress}`, {
+    x: margin + 10,
+    y: y - 78,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.35, 0.35, 0.35),
+  })
+
+  y -= 95
+
+  // Items header
+  page.drawText('Itens do Pedido', {
+    x: margin,
+    y,
+    size: 13,
+    font: helveticaBold,
+    color: rgb(0.2, 0.2, 0.2),
+  })
+
+  y -= 18
+
+  // Table header
+  const colX = {
+    sku: margin,
+    name: margin + 70,
+    qty: width - margin - 170,
+    unit: width - margin - 120,
+    price: width - margin - 70,
+    total: width - margin,
+  }
+
   page.drawLine({
-    start: { x: margin, y: y },
-    end: { x: width - margin, y: y },
+    start: { x: margin, y: y + 10 },
+    end: { x: width - margin, y: y + 10 },
     thickness: 1,
-    color: gray,
+    color: rgb(0.85, 0.85, 0.85),
   })
-  
-  y -= 20
-  
-  // Totals section
-  const totalsX = width - margin - 150
-  
-  const totals = [
-    { label: 'Subtotal:', value: `R$ ${order.totals.subtotal.toFixed(2)}` },
-    { label: 'Desconto:', value: `R$ ${order.totals.discount.toFixed(2)}` },
-    { label: 'Frete:', value: `R$ ${order.totals.freight.toFixed(2)}` },
-    { label: 'Total:', value: `R$ ${order.totals.total.toFixed(2)}`, bold: true },
-  ]
-  
-  totals.forEach((total, i) => {
-    if (total.bold) {
-      // Line above total
-      page.drawLine({
-        start: { x: totalsX, y: y + 5 },
-        end: { x: width - margin, y: y + 5 },
-        thickness: 1,
-        color: black,
+
+  page.drawText('SKU', {
+    x: colX.sku,
+    y,
+    size: 10,
+    font: helveticaBold,
+    color: rgb(0.25, 0.25, 0.25),
+  })
+
+  page.drawText('Produto', {
+    x: colX.name,
+    y,
+    size: 10,
+    font: helveticaBold,
+    color: rgb(0.25, 0.25, 0.25),
+  })
+
+  page.drawText('Qtd', {
+    x: colX.qty,
+    y,
+    size: 10,
+    font: helveticaBold,
+    color: rgb(0.25, 0.25, 0.25),
+  })
+
+  page.drawText('Unit', {
+    x: colX.unit,
+    y,
+    size: 10,
+    font: helveticaBold,
+    color: rgb(0.25, 0.25, 0.25),
+  })
+
+  page.drawText('Preço', {
+    x: colX.price,
+    y,
+    size: 10,
+    font: helveticaBold,
+    color: rgb(0.25, 0.25, 0.25),
+  })
+
+  page.drawText('Total', {
+    x: colX.total - 35,
+    y,
+    size: 10,
+    font: helveticaBold,
+    color: rgb(0.25, 0.25, 0.25),
+  })
+
+  y -= 14
+
+  page.drawLine({
+    start: { x: margin, y: y + 6 },
+    end: { x: width - margin, y: y + 6 },
+    thickness: 1,
+    color: rgb(0.85, 0.85, 0.85),
+  })
+
+  y -= 6
+
+  // Items rows
+  const rowHeight = 16
+
+  for (const item of order.items || []) {
+    // quebra de página simples
+    if (y < margin + 160) {
+      // cria nova página
+      const newPage = pdfDoc.addPage([595.28, 841.89])
+      y = newPage.getSize().height - margin
+
+      // header repetido
+      newPage.drawText('SAGRADO - Pedido (continuação)', {
+        x: margin,
+        y,
+        size: 14,
+        font: helveticaBold,
+        color: rgb(0.2, 0.2, 0.2),
       })
+
+      y -= 24
+
+      // reatribui page
+      ;(page as any) = newPage
+
+      // table header de novo
+      ;(page as any).drawText('SKU', {
+        x: colX.sku,
+        y,
+        size: 10,
+        font: helveticaBold,
+        color: rgb(0.25, 0.25, 0.25),
+      })
+
+      ;(page as any).drawText('Produto', {
+        x: colX.name,
+        y,
+        size: 10,
+        font: helveticaBold,
+        color: rgb(0.25, 0.25, 0.25),
+      })
+
+      ;(page as any).drawText('Qtd', {
+        x: colX.qty,
+        y,
+        size: 10,
+        font: helveticaBold,
+        color: rgb(0.25, 0.25, 0.25),
+      })
+
+      ;(page as any).drawText('Unit', {
+        x: colX.unit,
+        y,
+        size: 10,
+        font: helveticaBold,
+        color: rgb(0.25, 0.25, 0.25),
+      })
+
+      ;(page as any).drawText('Preço', {
+        x: colX.price,
+        y,
+        size: 10,
+        font: helveticaBold,
+        color: rgb(0.25, 0.25, 0.25),
+      })
+
+      ;(page as any).drawText('Total', {
+        x: colX.total - 35,
+        y,
+        size: 10,
+        font: helveticaBold,
+        color: rgb(0.25, 0.25, 0.25),
+      })
+
+      y -= 20
     }
-    
-    page.drawText(total.label, {
-      x: totalsX,
-      y: y,
-      size: total.bold ? 12 : 11,
-      font: total.bold ? helveticaBold : helveticaFont,
-      color: black,
+
+    const sku = item.productSnapshot?.sku || ''
+    const name = item.productSnapshot?.name || ''
+    const unit = item.productSnapshot?.unit || ''
+    const qty = item.qty || 0
+    const unitPrice = item.unitPrice || 0
+    const total = item.total || qty * unitPrice
+
+    page.drawText(sku, {
+      x: colX.sku,
+      y,
+      size: 9,
+      font: helveticaFont,
+      color: rgb(0.2, 0.2, 0.2),
     })
-    
-    page.drawText(total.value, {
-      x: width - margin - 60,
-      y: y,
-      size: total.bold ? 12 : 11,
-      font: total.bold ? helveticaBold : helveticaFont,
-      color: black,
+
+    page.drawText(name, {
+      x: colX.name,
+      y,
+      size: 9,
+      font: helveticaFont,
+      color: rgb(0.2, 0.2, 0.2),
+      maxWidth: colX.qty - colX.name - 10,
     })
-    
-    y -= total.bold ? 20 : 15
+
+    page.drawText(String(qty), {
+      x: colX.qty,
+      y,
+      size: 9,
+      font: helveticaFont,
+      color: rgb(0.2, 0.2, 0.2),
+    })
+
+    page.drawText(unit, {
+      x: colX.unit,
+      y,
+      size: 9,
+      font: helveticaFont,
+      color: rgb(0.2, 0.2, 0.2),
+    })
+
+    page.drawText(formatCurrency(unitPrice), {
+      x: colX.price,
+      y,
+      size: 9,
+      font: helveticaFont,
+      color: rgb(0.2, 0.2, 0.2),
+    })
+
+    page.drawText(formatCurrency(total), {
+      x: colX.total - 55,
+      y,
+      size: 9,
+      font: helveticaFont,
+      color: rgb(0.2, 0.2, 0.2),
+    })
+
+    y -= rowHeight
+  }
+
+  y -= 10
+
+  // Totals box
+  const boxHeight = 90
+  page.drawRectangle({
+    x: width - margin - 230,
+    y: y - boxHeight,
+    width: 230,
+    height: boxHeight,
+    borderColor: rgb(0.85, 0.85, 0.85),
+    borderWidth: 1,
   })
-  
-  // Notes section
-  if (order.notes && order.notes.trim()) {
-    y -= 20
-    
+
+  const subtotal = order.totals?.subtotal || 0
+  const discount = order.totals?.discount || 0
+  const freight = order.totals?.freight || 0
+  const total = order.totals?.total || subtotal - discount + freight
+
+  const labelX = width - margin - 220
+  const valueX = width - margin - 10
+
+  let ty = y - 18
+  page.drawText('Subtotal:', {
+    x: labelX,
+    y: ty,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.35, 0.35, 0.35),
+  })
+  page.drawText(formatCurrency(subtotal), {
+    x: valueX - 70,
+    y: ty,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.2, 0.2, 0.2),
+  })
+
+  ty -= 16
+  page.drawText('Desconto:', {
+    x: labelX,
+    y: ty,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.35, 0.35, 0.35),
+  })
+  page.drawText(formatCurrency(discount), {
+    x: valueX - 70,
+    y: ty,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.2, 0.2, 0.2),
+  })
+
+  ty -= 16
+  page.drawText('Frete:', {
+    x: labelX,
+    y: ty,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.35, 0.35, 0.35),
+  })
+  page.drawText(formatCurrency(freight), {
+    x: valueX - 70,
+    y: ty,
+    size: 10,
+    font: helveticaFont,
+    color: rgb(0.2, 0.2, 0.2),
+  })
+
+  ty -= 18
+  page.drawLine({
+    start: { x: width - margin - 230, y: ty + 10 },
+    end: { x: width - margin, y: ty + 10 },
+    thickness: 1,
+    color: rgb(0.85, 0.85, 0.85),
+  })
+
+  page.drawText('Total:', {
+    x: labelX,
+    y: ty - 2,
+    size: 11,
+    font: helveticaBold,
+    color: rgb(0.2, 0.2, 0.2),
+  })
+  page.drawText(formatCurrency(total), {
+    x: valueX - 70,
+    y: ty - 2,
+    size: 11,
+    font: helveticaBold,
+    color: rgb(0.2, 0.2, 0.2),
+  })
+
+  y -= boxHeight + 20
+
+  // Notes
+  const notes = order.notes || ''
+  if (notes) {
     page.drawText('Observações:', {
       x: margin,
-      y: y,
-      size: 12,
+      y,
+      size: 11,
       font: helveticaBold,
-      color: black,
+      color: rgb(0.2, 0.2, 0.2),
     })
-    
-    y -= 15
-    
-    const notesLines = order.notes.split('\n')
-    notesLines.forEach(line => {
-      page.drawText(line, {
-        x: margin,
-        y: y,
-        size: 10,
-        font: helveticaFont,
-        color: gray,
-      })
-      y -= 12
+
+    y -= 14
+
+    page.drawText(notes, {
+      x: margin,
+      y,
+      size: 10,
+      font: helveticaFont,
+      color: rgb(0.25, 0.25, 0.25),
+      maxWidth: width - margin * 2,
+      lineHeight: 12,
     })
+
+    y -= 40
   }
-  
+
   // Footer
   y = margin + 20
   page.drawText('SAGRADO - Sistema de Pedidos', {
@@ -260,14 +489,17 @@ export async function generateOrderPdf(order: Order): Promise<Uint8Array> {
     y: y,
     size: 9,
     font: helveticaFont,
-    color: gray,
+    color: rgb(0.5, 0.5, 0.5),
   })
   
   return await pdfDoc.save()
 }
 
 export function downloadOrderPdf(order: Order, pdfBytes: Uint8Array) {
-  const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+  // pdf-lib pode retornar Uint8Array<ArrayBufferLike> (ex.: SharedArrayBuffer) e isso quebra a tipagem do Blob no build do Next.
+  // Normaliza para Uint8Array<ArrayBuffer> copiando os bytes.
+  const bytes = new Uint8Array(pdfBytes)
+  const blob = new Blob([bytes], { type: 'application/pdf' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
