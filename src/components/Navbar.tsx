@@ -14,7 +14,7 @@ const NavLink = ({ href, label }: { href: string; label: string }) => {
         (active
           ? 'text-gray-900 bg-gray-100'
           : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50') +
-        ' px-3 py-2 rounded-md text-sm font-medium whitespace-nowrap'
+        ' px-3 py-2 rounded-md text-sm font-medium'
       }
     >
       {label}
@@ -31,7 +31,7 @@ const MobileNavLink = ({ href, label }: { href: string; label: string }) => {
       href={href}
       className={
         (active
-          ? 'bg-blue-600 text-white'
+          ? 'bg-blue-600 text-white hover:bg-blue-700'
           : 'bg-gray-100 text-gray-700 hover:bg-gray-200') +
         ' px-4 py-2 rounded-full text-sm font-semibold whitespace-nowrap'
       }
@@ -43,31 +43,20 @@ const MobileNavLink = ({ href, label }: { href: string; label: string }) => {
 
 export const Navbar: React.FC = () => {
   return (
-    <nav className="bg-white shadow-sm border-b">
+    <nav className="bg-white shadow-sm border-b sticky top-0 z-40">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Top row */}
-        <div className="flex justify-between h-16 items-center">
-          <div className="flex items-center space-x-8">
-            <div className="flex-shrink-0">
-              <Link href="/orders" className="text-xl font-bold text-gray-900">
-                SAGRADO
-              </Link>
-            </div>
-
-            {/* Desktop nav */}
-            <div className="hidden md:block">
-              <div className="ml-6 flex items-baseline space-x-2">
-                <NavLink href="/orders" label="Pedidos" />
-                <NavLink href="/customers" label="Clientes" />
-                <NavLink href="/products" label="Produtos" />
-              </div>
-            </div>
+        <div className="flex items-center justify-between h-16">
+          <div className="hidden md:flex space-x-4">
+            <NavLink href="/orders" label="Pedidos" />
+            <NavLink href="/customers" label="Clientes" />
+            <NavLink href="/products" label="Produtos" />
           </div>
-
-          <div className="flex items-center">
-            <span className="text-xs text-gray-500">
-              Offline-first • sem login
-            </span>
+          <div className="md:hidden">
+            <span className="text-gray-800 font-semibold">Sagrado Pedidos</span>
+          </div>
+          <div className="hidden md:block">
+            {/* espaço para futuras ações no desktop */}
           </div>
         </div>
 
