@@ -134,26 +134,7 @@ export async function generateOrderPdf(order: Order): Promise<Uint8Array> {
   page.drawText(`${BRAND.title}`, { x: M + 54, y: height - 42, size: 16, font: bold, color: cText })
   page.drawText(`${kind}`, { x: M + 54, y: height - 62, size: 12, font: bold, color: cMuted })
 
-  // badge status à direita
-  const badgeText = kind === 'PEDIDO' ? 'CONFIRMADO' : 'EM NEGOCIAÇÃO'
-  const badgeW = 120
-  const badgeH = 22
-  page.drawRectangle({
-    x: width - M - badgeW,
-    y: height - 54,
-    width: badgeW,
-    height: badgeH,
-    color: cBadge,
-    borderRadius: 6 as any,
-  })
-  page.drawText(badgeText, {
-    x: width - M - badgeW + 12,
-    y: height - 48,
-    size: 10,
-    font: bold,
-    color: rgb(1, 1, 1),
-  })
-
+ 
   // meta do documento (topo direito)
   const metaX = width - M - 220
   page.drawText(`Nº: ${docNumber}`, { x: metaX, y: height - 24, size: 10, font: bold, color: cText })
