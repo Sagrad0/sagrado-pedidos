@@ -2,10 +2,40 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import type { Order } from '@/types'
 
 type PdfKind = 'ORCAMENTO' | 'PEDIDO'
-type UnknownRecord = Record<string, unknown>
 
-function isRecord(v: unknown): v is UnknownRecord {
-  return typeof v === 'object' && v !== null
+/**
+ * PDF (layout tipo Mercos / modelo ARCO):
+ * - Cabeçalho estruturado
+ * - Blocos de cadastro
+ * - Tabela com grid
+ * - Caixa de totais
+ * - Rodapé
+ *
+ * Regras:
+ * - Sem fotos de produtos
+ * - Faturante (CDA Foods) no cabeçalho (dados completos)
+ *
+ * Ajuste os dados do faturante UMA vez aqui e acabou.
+ */
+const FATURANTE = {
+  razaoSocial: 'CDA FOODS LTDA',
+  nomeFantasia: 'CDA Foods',
+  cnpj: '00.000.000/0000-00',
+  ie: '000000000',
+  endereco: 'ENDEREÇO COMPLETO, Nº, BAIRRO, CEP',
+  cidade: 'RECIFE',
+  uf: 'PE',
+  telefone: '(81) 00000-0000',
+  email: 'contato@cdafoods.com.br',
+}
+
+const A4_W = 595.28
+const A4_H = 841.89
+const M = 28 // margem
+
+function safeStr(v: any): string {
+  if (v === null || v === undefined) return ''
+  return String(v)
 }
 
 function formatDatePtBR(value: any): string {
@@ -21,89 +51,31 @@ function formatDatePtBR(value: any): string {
 }
 
 function brl(v: number): string {
-  const fixed = (Number.isFinite(v) ? v : 0).toFixed(2)
-  const [i, dec] = fixed.split('.')
-  const withThousands = i.replace(/\B(?=(\d{3})+(?!\d))/g, '.')
-  return `R$ ${withThousands},${dec}`
+  const n = Number.isFinite(v) ? v : 0
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n)
 }
 
-function getItemLabel(item: unknown): string {
-  if (!isRecord(item)) return '—'
-
-  const ps = item.productSnapshot
-  if (isRecord(ps)) {
-    const sku = typeof ps.sku === 'string' ? ps.sku : ''
-    const name = typeof ps.name === 'string' ? ps.name : ''
-    if (sku && name) return `${sku} - ${name}`
-    if (sku) return sku
-    if (name) return name
-  }
-
-  const sku2 = typeof item.sku === 'string' ? item.sku : ''
-  const name2 = typeof item.name === 'string' ? item.name : ''
-  if (sku2 && name2) return `${sku2} - ${name2}`
-  if (sku2) return sku2
-  if (name2) return name2
-
-  const pid = typeof item.productId === 'string' ? item.productId : ''
-  return pid || '—'
+function n2(v: number): number {
+  const n = Number.isFinite(v) ? v : 0
+  return Math.round(n * 100) / 100
 }
 
-function getItemQty(item: unknown): number {
-  if (!isRecord(item)) return 0
-  const q1 = item.qty
-  if (typeof q1 === 'number') return q1
-  const q2 = item.quantity
-  if (typeof q2 === 'number') return q2
-  return 0
+function inferKind(order: Order, kind?: PdfKind): PdfKind {
+  if (kind) return kind
+  if (order.status === 'orcamento') return 'ORCAMENTO'
+  return 'PEDIDO'
 }
 
-function getItemUnitPrice(item: unknown): number {
-  if (!isRecord(item)) return 0
-  const p1 = item.unitPrice
-  if (typeof p1 === 'number') return p1
-  const p2 = item.price
-  if (typeof p2 === 'number') return p2
-  return 0
+function docNumber(order: Order, kind: PdfKind): string {
+  const prefix = kind === 'PEDIDO' ? 'PED' : 'ORC'
+  const raw = safeStr(order.orderNumber).trim()
+  if (!raw) return prefix
+  if (raw.startsWith('PED-') || raw.startsWith('ORC-')) return raw
+  return `${prefix}-${raw}`
 }
 
-function getCustomerField(order: any, key: string): string {
-  const c = order?.customer
-  if (!c || typeof c !== 'object') return ''
-  const v = c[key]
-  return typeof v === 'string' ? v : ''
-}
-
-function getOrderNumber(order: any): string {
-  const n1 = typeof order?.orderNumber === 'string' ? order.orderNumber : ''
-  const n2 = typeof order?.number === 'string' ? order.number : ''
-  return n1 || n2 || ''
-}
-
-function inferKind(order: any): PdfKind {
-  const st = typeof order?.status === 'string' ? order.status : ''
-  return st === 'orcamento' ? 'ORCAMENTO' : 'PEDIDO'
-}
-
-/**
- * Mantém compatibilidade total:
- * - Pode ser chamado com 1 argumento (como hoje no page.tsx)
- * - Pode ser chamado com 2 argumentos se quiser forçar ORCAMENTO/PEDIDO
- */
 export async function generateOrderPdf(order: Order, kind?: PdfKind) {
-  const K: PdfKind = kind ?? inferKind(order)
-
-  // A4
-  const A4_W = 595.28
-  const A4_H = 841.89
-  const M = 36
-
-  // cores Sagrado
-  const cBrand = rgb(244 / 255, 67 / 255, 157 / 255) // #F4439D
-  const cText = rgb(17 / 255, 24 / 255, 39 / 255) // #111827
-  const cMuted = rgb(75 / 255, 85 / 255, 99 / 255) // #4B5563
-  const cBorder = rgb(229 / 255, 231 / 255, 235 / 255) // #E5E7EB
-  const cSoft = rgb(1, 0.968, 0.984) // ~ #FFF7FB
+  const K = inferKind(order, kind)
 
   const pdfDoc = await PDFDocument.create()
   let page = pdfDoc.addPage([A4_W, A4_H])
@@ -111,195 +83,305 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
   const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
-  const drawLine = (y: number) => {
-    page.drawLine({
-      start: { x: M, y },
-      end: { x: A4_W - M, y },
-      thickness: 1,
-      color: cBorder,
+  const cText = rgb(0.1, 0.1, 0.1)
+  const cMuted = rgb(0.35, 0.35, 0.35)
+  const cBorder = rgb(0.15, 0.15, 0.15)
+  const cFillHeader = rgb(0.95, 0.95, 0.95)
+  const cFillTableHeader = rgb(0.92, 0.92, 0.92)
+
+  const W = A4_W - 2 * M
+
+  const drawBox = (x: number, yTop: number, w: number, h: number, fill?: any) => {
+    page.drawRectangle({
+      x,
+      y: yTop - h,
+      width: w,
+      height: h,
+      borderColor: cBorder,
+      borderWidth: 1,
+      color: fill,
     })
   }
 
-  const ensureSpace = (y: number, needed: number) => {
-    if (y - needed <= M + 40) {
-      page = pdfDoc.addPage([A4_W, A4_H])
-      return A4_H - M
+  const drawText = (
+    text: string,
+    x: number,
+    y: number,
+    opts?: { bold?: boolean; size?: number; color?: any; maxWidth?: number; align?: 'left' | 'right' | 'center' }
+  ) => {
+    const size = opts?.size ?? 9
+    const f = opts?.bold ? fontB : font
+    const color = opts?.color ?? cText
+    const t = safeStr(text)
+
+    if (opts?.align && opts.align !== 'left') {
+      const w = f.widthOfTextAtSize(t, size)
+      let xx = x
+      if (opts.align === 'right') xx = x - w
+      if (opts.align === 'center') xx = x - w / 2
+      page.drawText(t, { x: xx, y, size, font: f, color, maxWidth: opts?.maxWidth })
+      return
     }
-    return y
+
+    page.drawText(t, { x, y, size, font: f, color, maxWidth: opts?.maxWidth })
   }
 
-  const orderNumber = getOrderNumber(order)
-  const createdAt = formatDatePtBR((order as any)?.createdAt)
+  const drawKV = (label: string, value: string, x: number, y: number, w: number) => {
+    const L = `${label}:`
+    drawText(L, x, y, { bold: true, size: 9 })
+    const lw = fontB.widthOfTextAtSize(L, 9)
+    drawText(value || '—', x + lw + 4, y, { size: 9, color: cText, maxWidth: w - lw - 4 })
+  }
 
-  // ===== Header =====
-  page.drawRectangle({ x: 0, y: A4_H - 110, width: A4_W, height: 110, color: cSoft })
+  // ===== HEADER (Mercos-like) =====
+  const drawHeader = (yTop: number): number => {
+    const h = 86
+    drawBox(M, yTop, W, h, cFillHeader)
 
-  page.drawText('SAGRADO', { x: M, y: A4_H - 60, size: 26, font: fontB, color: cBrand })
+    const leftX = M + 10
+    const rightX = M + W - 10
+    const top = yTop - 14
 
-  const docTitle = K === 'PEDIDO' ? 'PEDIDO' : 'ORÇAMENTO'
-  page.drawText(`${docTitle} Nº ${orderNumber || '—'}`, {
-    x: M,
-    y: A4_H - 86,
-    size: 12,
-    font: fontB,
-    color: cText,
-  })
+    // Esquerda (marca curta)
+    drawText('SAGRADO', leftX, top, { bold: true, size: 14 })
+    drawText('Sistema de Pedidos', leftX, top - 16, { size: 9, color: cMuted })
 
-  page.drawText(`Data: ${createdAt}`, {
-    x: A4_W - M - 150,
-    y: A4_H - 86,
-    size: 10,
-    font,
-    color: cMuted,
-  })
+    // Centro (título + número)
+    const title = K === 'PEDIDO' ? 'PEDIDO' : 'ORÇAMENTO'
+    drawText(title, M + W / 2, top, { bold: true, size: 14, align: 'center' })
+    drawText(`Nº ${docNumber(order, K)}`, M + W / 2, top - 16, { bold: true, size: 11, align: 'center' })
+    drawText(`Data de Emissão: ${formatDatePtBR(order.createdAt)}`, M + W / 2, top - 32, {
+      size: 9,
+      align: 'center',
+      color: cText,
+    })
 
-  let y = A4_H - 130
+    // Direita (faturante)
+    drawText(FATURANTE.nomeFantasia, rightX, top, { bold: true, size: 11, align: 'right' })
+    drawText(FATURANTE.razaoSocial, rightX, top - 12, { size: 8, align: 'right', color: cMuted })
+    drawText(`CNPJ: ${FATURANTE.cnpj}  |  IE: ${FATURANTE.ie}`, rightX, top - 24, { size: 8, align: 'right' })
+    drawText(FATURANTE.endereco, rightX, top - 36, { size: 8, align: 'right', maxWidth: 230 })
+    drawText(`${FATURANTE.cidade}/${FATURANTE.uf}`, rightX, top - 48, { size: 8, align: 'right' })
+    drawText(`${FATURANTE.telefone}  |  ${FATURANTE.email}`, rightX, top - 60, {
+      size: 8,
+      align: 'right',
+      maxWidth: 230,
+    })
 
-  // ===== Faturante (CDA) no cabeçalho =====
-  page.drawText('Faturante:', { x: M, y, size: 10, font: fontB, color: cText })
+    return yTop - h - 14
+  }
+
+  let y = A4_H - M
+  y = drawHeader(y)
+
+  const newPage = () => {
+    page = pdfDoc.addPage([A4_W, A4_H])
+    y = A4_H - M
+    y = drawHeader(y)
+  }
+
+  const wrapText = (text: string, maxWidth: number, size: number): string[] => {
+    const words = text.split(/\s+/).filter(Boolean)
+    const lines: string[] = []
+    let line = ''
+
+    for (const w of words) {
+      const test = line ? `${line} ${w}` : w
+      const wLen = font.widthOfTextAtSize(test, size)
+      if (wLen <= maxWidth) line = test
+      else {
+        if (line) lines.push(line)
+        line = w
+      }
+    }
+    if (line) lines.push(line)
+    return lines
+  }
+
+  // ===== BLOCO CLIENTE =====
+  const blockH = 92
+  drawBox(M, y, W, blockH)
+
+  const x1 = M + 10
+  const x2 = M + W / 2 + 10
+  const topY = y - 16
+
+  drawText('DADOS DO CLIENTE', x1, topY + 16, { bold: true, size: 10 })
+
+  const c = order.customerSnapshot
+  const cName = safeStr(c?.name)
+  const cDoc = safeStr(c?.doc)
+  const cPhone = safeStr(c?.phone)
+  const cEmail = safeStr(c?.email)
+  const cAddr = safeStr(c?.address)
+
+  drawKV('Cliente', cName, x1, topY, W / 2 - 20)
+  drawKV('Documento', cDoc, x1, topY - 12, W / 2 - 20)
+  drawKV('Telefone', cPhone, x1, topY - 24, W / 2 - 20)
+
+  drawKV('E-mail', cEmail, x2, topY, W / 2 - 20)
+  drawKV('Endereço', cAddr, x2, topY - 12, W / 2 - 20)
+
+  y = y - blockH - 14
+
+  // ===== TABELA (GRID) =====
+  drawText('ITENS', M, y - 2, { bold: true, size: 10 })
   y -= 14
 
-  const faturanteLines = [
-    'CDA Foods',
-    'CNPJ: 00.874.798/0001-09',
-    'Av. Liberdade, 500 – CEP 55014-580',
-    'Tel: (81) 3723-8881',
-    'administrativo@cdafoods.com.br',
-  ]
+  const col = {
+    idx: M + 6,
+    sku: M + 40,
+    prod: M + 140,
+    und: M + 380,
+    qtd: M + 420,
+    unit: M + 505,
+    sub: M + W - 6,
+  }
 
-  faturanteLines.forEach((line) => {
-    page.drawText(line, { x: M, y, size: 9, font, color: cMuted })
-    y -= 12
-  })
+  const rowH = 18
+  const tableHeaderH = 22
 
-  y -= 6
-  drawLine(y)
-  y -= 16
-
-  // ===== Cliente =====
-  page.drawText('Cliente:', { x: M, y, size: 10, font: fontB, color: cText })
-  y -= 14
-
-  const cName = getCustomerField(order as any, 'name')
-  const cDoc = getCustomerField(order as any, 'document')
-  const cPhone = getCustomerField(order as any, 'phone') || getCustomerField(order as any, 'whatsapp')
-  const cEmail = getCustomerField(order as any, 'email')
-  const cAddr = getCustomerField(order as any, 'address')
-  const cCity = getCustomerField(order as any, 'city')
-  const cState = getCustomerField(order as any, 'state')
-
-  const clienteLines = [
-    cName || '—',
-    cDoc ? `Documento: ${cDoc}` : '',
-    cPhone ? `Contato: ${cPhone}` : '',
-    cEmail ? `E-mail: ${cEmail}` : '',
-    cAddr || '',
-    cCity || cState ? `${cCity}${cCity && cState ? ' - ' : ''}${cState}` : '',
-  ].filter(Boolean)
-
-  clienteLines.forEach((line) => {
-    page.drawText(String(line), { x: M, y, size: 9, font, color: cMuted })
-    y -= 12
-  })
-
-  y -= 6
-  drawLine(y)
-  y -= 18
-
-  // ===== Tabela de itens =====
-  page.drawText('Itens', { x: M, y, size: 12, font: fontB, color: cText })
-  y -= 14
-
-  const colProduto = M
-  const colQtd = M + 300
-  const colUnit = M + 350
-  const colSub = M + 440
+  const gridXs = [M, col.sku - 10, col.prod - 10, col.und - 10, col.qtd - 10, col.unit - 10, M + W]
 
   const drawTableHeader = () => {
-    page.drawText('Produto', { x: colProduto, y, size: 9, font: fontB, color: cText })
-    page.drawText('Qtd', { x: colQtd, y, size: 9, font: fontB, color: cText })
-    page.drawText('Unit.', { x: colUnit, y, size: 9, font: fontB, color: cText })
-    page.drawText('Subtotal', { x: colSub, y, size: 9, font: fontB, color: cText })
+    drawBox(M, y, W, tableHeaderH, cFillTableHeader)
+
+    const ty = y - 15
+    drawText('#', col.idx, ty, { bold: true, size: 9 })
+    drawText('Código', col.sku, ty, { bold: true, size: 9 })
+    drawText('Produto', col.prod, ty, { bold: true, size: 9 })
+    drawText('Unid.', col.und, ty, { bold: true, size: 9 })
+    drawText('Qtde.', col.qtd, ty, { bold: true, size: 9 })
+    drawText('Preço', col.unit, ty, { bold: true, size: 9, align: 'right' })
+    drawText('Subtotal', col.sub, ty, { bold: true, size: 9, align: 'right' })
+
+    const y0 = y - tableHeaderH
+    const y1 = y
+    gridXs.forEach((x) => page.drawLine({ start: { x, y: y0 }, end: { x, y: y1 }, thickness: 1, color: cBorder }))
+
+    y -= tableHeaderH
   }
+
+  const needNewPageForRow = () => y - rowH <= M + 190
 
   drawTableHeader()
-  y -= 8
-  drawLine(y)
+
+  const items = Array.isArray(order.items) ? order.items : []
+  items.forEach((it, idx) => {
+    if (needNewPageForRow()) {
+      newPage()
+      y -= 8
+      drawText('ITENS (continuação)', M, y - 2, { bold: true, size: 10 })
+      y -= 14
+      drawTableHeader()
+    }
+
+    drawBox(M, y, W, rowH)
+
+    const yText = y - 13
+    const sku = safeStr(it?.productSnapshot?.sku || (it as any)?.sku)
+    const name = safeStr(it?.productSnapshot?.name || (it as any)?.name)
+    const unit = safeStr(it?.productSnapshot?.unit || (it as any)?.unit)
+    const qty = Number((it as any)?.qty ?? 0)
+    const unitPrice = Number((it as any)?.unitPrice ?? 0)
+    const subtotal = n2(qty * unitPrice)
+
+    drawText(String(idx + 1), col.idx, yText, { size: 9 })
+    drawText(sku || '—', col.sku, yText, { size: 9 })
+    drawText(name || '—', col.prod, yText, { size: 9, maxWidth: col.und - col.prod - 14 })
+    drawText(unit || '—', col.und, yText, { size: 9 })
+    drawText(String(qty || 0), col.qtd, yText, { size: 9 })
+    drawText(brl(unitPrice), col.unit, yText, { size: 9, align: 'right' })
+    drawText(brl(subtotal), col.sub, yText, { size: 9, align: 'right' })
+
+    const y0 = y - rowH
+    const y1 = y
+    gridXs.forEach((x) => page.drawLine({ start: { x, y: y0 }, end: { x, y: y1 }, thickness: 1, color: cBorder }))
+
+    y -= rowH
+  })
+
+  // ===== TOTAIS + OBS =====
+  if (y <= M + 190) newPage()
+
   y -= 12
 
-  const items: unknown[] = Array.isArray((order as any)?.items) ? ((order as any).items as unknown[]) : []
-  let computedTotal = 0
+  const totalsBoxW = 220
+  const totalsBoxH = 92
+  const totalsX = M + W - totalsBoxW
 
-  for (const it of items) {
-    y = ensureSpace(y, 32)
+  drawBox(totalsX, y, totalsBoxW, totalsBoxH)
+  drawText('TOTAIS', totalsX + 10, y - 14, { bold: true, size: 10 })
 
-    const label = getItemLabel(it)
-    const qty = getItemQty(it)
-    const unit = getItemUnitPrice(it)
-    const sub = qty * unit
-    computedTotal += sub
+  const t = order.totals || { subtotal: 0, discount: 0, freight: 0, total: 0 }
+  const subtotal = n2(Number((t as any).subtotal ?? 0))
+  const discount = n2(Number((t as any).discount ?? 0))
+  const freight = n2(Number((t as any).freight ?? 0))
+  const total = n2(Number((t as any).total ?? subtotal - discount + freight))
 
-    page.drawText(label, {
-      x: colProduto,
-      y,
-      size: 9,
-      font,
-      color: cText,
-      maxWidth: 280,
-    })
+  const tx = totalsX + 10
+  const ty = y - 30
 
-    page.drawText(String(qty), { x: colQtd, y, size: 9, font, color: cText })
-    page.drawText(brl(unit), { x: colUnit, y, size: 9, font, color: cText })
-    page.drawText(brl(sub), { x: colSub, y, size: 9, font, color: cText })
+  drawText('Subtotal:', tx, ty, { size: 9 })
+  drawText(brl(subtotal), totalsX + totalsBoxW - 10, ty, { size: 9, align: 'right' })
 
-    y -= 14
-    page.drawLine({
-      start: { x: M, y },
-      end: { x: A4_W - M, y },
-      thickness: 0.5,
-      color: cBorder,
-    })
-    y -= 10
+  drawText('Desconto:', tx, ty - 14, { size: 9 })
+  drawText(brl(discount), totalsX + totalsBoxW - 10, ty - 14, { size: 9, align: 'right' })
 
-    // Se caiu numa página nova, redesenha cabeçalho da tabela
-    if (y > A4_H - M - 60) {
-      // nada
-    }
-  }
+  drawText('Frete:', tx, ty - 28, { size: 9 })
+  drawText(brl(freight), totalsX + totalsBoxW - 10, ty - 28, { size: 9, align: 'right' })
 
-  y = ensureSpace(y, 80)
+  page.drawLine({
+    start: { x: totalsX + 10, y: ty - 36 },
+    end: { x: totalsX + totalsBoxW - 10, y: ty - 36 },
+    thickness: 1,
+    color: cBorder,
+  })
 
-  // ===== Resumo =====
-  drawLine(y)
-  y -= 18
+  drawText('TOTAL:', tx, ty - 52, { bold: true, size: 10 })
+  drawText(brl(total), totalsX + totalsBoxW - 10, ty - 52, { bold: true, size: 10, align: 'right' })
 
-  const total =
-    typeof (order as any)?.total === 'number' && Number.isFinite((order as any).total)
-      ? (order as any).total
-      : computedTotal
+  const notesX = M
+  const notesW = W - totalsBoxW - 12
+  const notesH = totalsBoxH
 
-  page.drawText('Valor total:', { x: colUnit, y, size: 12, font: fontB, color: cText })
-  page.drawText(brl(total), { x: colSub, y, size: 14, font: fontB, color: cBrand })
+  drawBox(notesX, y, notesW, notesH)
+  drawText('OBSERVAÇÕES', notesX + 10, y - 14, { bold: true, size: 10 })
 
-  // ===== Salva e baixa (igual antes) =====
+  const notes = safeStr(order.notes)
+  const maxNotesWidth = notesW - 20
+  const noteLines = notes ? wrapText(notes, maxNotesWidth, 9).slice(0, 5) : ['—']
+  let ny = y - 30
+  noteLines.forEach((ln) => {
+    drawText(ln, notesX + 10, ny, { size: 9, maxWidth: maxNotesWidth })
+    ny -= 12
+  })
+
+  y -= totalsBoxH + 16
+
+  // ===== RODAPÉ =====
+  const footerY = M + 22
+
+  page.drawLine({
+    start: { x: M, y: footerY + 10 },
+    end: { x: A4_W - M, y: footerY + 10 },
+    thickness: 1,
+    color: cBorder,
+  })
+
+  drawText(`Gerado em ${formatDatePtBR(Date.now())} • ${FATURANTE.nomeFantasia}`, M, footerY, { size: 8, color: cMuted })
+
+  // Download
   const pdfBytes = await pdfDoc.save()
-  const safeBytes = new Uint8Array(pdfBytes)
-  const blob = new Blob([safeBytes], { type: 'application/pdf' })
+  const blob = new Blob([pdfBytes], { type: 'application/pdf' })
   const url = URL.createObjectURL(blob)
 
   const a = document.createElement('a')
   a.href = url
-
-  const prefix = K === 'PEDIDO' ? 'PED' : 'ORC'
-  const raw = orderNumber || ''
-  const fileNumber =
-    raw.startsWith('PED-') || raw.startsWith('ORC-') ? raw : raw ? `${prefix}-${raw}` : `${prefix}`
-
-  a.download = `${K}_${fileNumber}.pdf`
+  a.download = `${K}_${docNumber(order, K)}.pdf`
 
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
-
   URL.revokeObjectURL(url)
 }
