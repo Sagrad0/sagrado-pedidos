@@ -1,54 +1,260 @@
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
-import { Order } from '@/types'
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import type { Order, OrderItem } from "@/types";
 
-type PdfKind = 'ORCAMENTO' | 'PEDIDO'
+type PdfKind = "ORCAMENTO" | "PEDIDO";
 
-const M = 36 // margin
-const cSoft = rgb(0.97, 0.98, 0.99)
-const cLine = rgb(0.85, 0.88, 0.92)
-const cDark = rgb(0.13, 0.2, 0.3)
-const cBlue = rgb(0.11, 0.4, 0.86)
+// A4 (pdf-lib trabalha em pontos)
+const A4 = { w: 595.28, h: 841.89 };
+const M = 36;
 
-export async function generateOrderPdf(order: Order) {
-  const pdfDoc = await PDFDocument.create()
-  const page = pdfDoc.addPage([595.28, 841.89]) // A4
-  const { width, height } = page.getSize()
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
-  const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+export async function generateOrderPdf(
+  order: Order,
+  kind: PdfKind
+): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([A4.w, A4.h]);
 
-  // Header bar
-  page.drawRectangle({ x: 0, y: height - 86, width, height: 86, color: cSoft })
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  const pdfBytes = await pdfDoc.save()
+  let y = A4.h - M;
 
-  /**
-   * FIX TS/BlobPart:
-   * Em alguns builds (Vercel/TS libs), o retorno tipa como Uint8Array<ArrayBufferLike>
-   * e o BlobPart exige ArrayBuffer. A forma mais segura é copiar para um Uint8Array
-   * "normal" (com ArrayBuffer), sem mudar dados e sem any espalhado.
-   */
-  const safeBytes = new Uint8Array(pdfBytes)
+  /* =========================
+     CORES (paleta Sagrado)
+  ========================== */
+  const brand = rgb(244 / 255, 67 / 255, 157 / 255); // #F4439D
+  const text = rgb(55 / 255, 65 / 255, 81 / 255);
+  const border = rgb(229 / 255, 231 / 255, 235 / 255);
 
-  const blob = new Blob([safeBytes], { type: 'application/pdf' })
-  const url = URL.createObjectURL(blob)
+  /* =========================
+     CABEÇALHO
+  ========================== */
 
-  const a = document.createElement('a')
-  a.href = url
+  // Marca
+  page.drawText("SAGRADO", {
+    x: M,
+    y,
+    size: 26,
+    font: fontBold,
+    color: brand,
+  });
 
-  const kind: PdfKind = order.status === 'pedido' ? 'PEDIDO' : 'ORCAMENTO'
-  const prefix = kind === 'PEDIDO' ? 'PED' : 'ORC'
+  y -= 28;
 
-  const orderNumber = order.orderNumber || ''
-  const fileNumber =
-    orderNumber.startsWith('PED-') || orderNumber.startsWith('ORC-')
-      ? orderNumber
-      : `${prefix}-${orderNumber}`
+  // Tipo + número
+  page.drawText(
+    `${kind === "PEDIDO" ? "PEDIDO" : "ORÇAMENTO"} Nº ${order.number ?? "-"}`,
+    {
+      x: M,
+      y,
+      size: 14,
+      font: fontBold,
+      color: text,
+    }
+  );
 
-  a.download = `${kind}_${fileNumber}.pdf`
+  y -= 18;
 
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
+  // Data
+  page.drawText(`Data: ${order.createdAt ?? "-"}`, {
+    x: M,
+    y,
+    size: 10,
+    font: fontRegular,
+    color: text,
+  });
 
-  URL.revokeObjectURL(url)
+  y -= 22;
+
+  // Linha
+  page.drawLine({
+    start: { x: M, y },
+    end: { x: A4.w - M, y },
+    thickness: 1,
+    color: border,
+  });
+
+  y -= 16;
+
+  /* =========================
+     FATURANTE – CDA FOODS
+  ========================== */
+
+  page.drawText("Faturante:", {
+    x: M,
+    y,
+    size: 10,
+    font: fontBold,
+    color: text,
+  });
+
+  y -= 14;
+
+  const faturante = [
+    "CDA Foods",
+    "CNPJ: 00.874.798/0001-09",
+    "Av. Liberdade, 500 – CEP 55014-580",
+    "Tel: (81) 3723-8881",
+    "administrativo@cdafoods.com.br",
+  ];
+
+  faturante.forEach((line) => {
+    page.drawText(line, {
+      x: M,
+      y,
+      size: 9,
+      font: fontRegular,
+      color: text,
+    });
+    y -= 12;
+  });
+
+  y -= 10;
+
+  /* =========================
+     CLIENTE
+  ========================== */
+
+  page.drawText("Cliente:", {
+    x: M,
+    y,
+    size: 10,
+    font: fontBold,
+    color: text,
+  });
+
+  y -= 14;
+
+  const cliente = [
+    order.customer?.name ?? "-",
+    order.customer?.document ? `Documento: ${order.customer.document}` : "",
+    order.customer?.address ?? "",
+    order.customer?.city ?? "",
+    order.customer?.email ?? "",
+  ].filter(Boolean);
+
+  cliente.forEach((line) => {
+    page.drawText(line, {
+      x: M,
+      y,
+      size: 9,
+      font: fontRegular,
+      color: text,
+    });
+    y -= 12;
+  });
+
+  y -= 16;
+
+  /* =========================
+     TABELA DE ITENS
+  ========================== */
+
+  page.drawText("Itens do pedido", {
+    x: M,
+    y,
+    size: 12,
+    font: fontBold,
+    color: text,
+  });
+
+  y -= 14;
+
+  const headers = ["Produto", "Qtd", "Unit.", "Subtotal"];
+  const cols = [M, M + 280, M + 340, M + 420];
+
+  headers.forEach((h, i) => {
+    page.drawText(h, {
+      x: cols[i],
+      y,
+      size: 9,
+      font: fontBold,
+      color: text,
+    });
+  });
+
+  y -= 8;
+
+  page.drawLine({
+    start: { x: M, y },
+    end: { x: A4.w - M, y },
+    thickness: 1,
+    color: border,
+  });
+
+  y -= 12;
+
+  order.items.forEach((item: OrderItem) => {
+    page.drawText(item.name, {
+      x: cols[0],
+      y,
+      size: 9,
+      font: fontRegular,
+      color: text,
+      maxWidth: 260,
+    });
+
+    page.drawText(String(item.quantity), {
+      x: cols[1],
+      y,
+      size: 9,
+      font: fontRegular,
+      color: text,
+    });
+
+    page.drawText(`R$ ${item.price.toFixed(2)}`, {
+      x: cols[2],
+      y,
+      size: 9,
+      font: fontRegular,
+      color: text,
+    });
+
+    page.drawText(`R$ ${(item.price * item.quantity).toFixed(2)}`, {
+      x: cols[3],
+      y,
+      size: 9,
+      font: fontRegular,
+      color: text,
+    });
+
+    y -= 14;
+  });
+
+  y -= 10;
+
+  /* =========================
+     RESUMO
+  ========================== */
+
+  page.drawLine({
+    start: { x: M, y },
+    end: { x: A4.w - M, y },
+    thickness: 1,
+    color: border,
+  });
+
+  y -= 16;
+
+  page.drawText("Valor total:", {
+    x: M + 300,
+    y,
+    size: 12,
+    font: fontBold,
+    color: text,
+  });
+
+  page.drawText(`R$ ${order.total.toFixed(2)}`, {
+    x: M + 380,
+    y,
+    size: 14,
+    font: fontBold,
+    color: brand,
+  });
+
+  /* =========================
+     FINALIZA
+  ========================== */
+
+  return await pdfDoc.save();
 }
