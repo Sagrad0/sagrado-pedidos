@@ -4,12 +4,11 @@ import type { Order } from '@/types'
 type PdfKind = 'ORCAMENTO' | 'PEDIDO'
 
 /**
- * PDF profissional com layout refinado:
- * - Cabeçalho roxo elegante com título destacado
- * - Hierarquia visual clara em todos os blocos
- * - Tabela otimizada com proporções balanceadas e grid visível
- * - Blocos de totais e observações com destaque visual
- * - Tipografia hierárquica e espaçamento profissional
+ * PDF profissional com layout refinado e corrigido:
+ * - Cabeçalho reorganizado: Número/data à esquerda, CDA à direita
+ * - Tabela com proporções ajustadas e padding correto
+ * - Todos os elementos respeitam os limites da página
+ * - Tipografia otimizada e espaçamento profissional
  */
 
 // >>>> EDITAR AQUI (dados da CDA) <<<<
@@ -41,7 +40,7 @@ const BRAND = {
 // === LAYOUT CONSTANTS ===
 const A4_W = 595.28
 const A4_H = 841.89
-const M = 36   // Margem aumentada para ar profissional
+const M = 36   // Margem profissional
 
 function safeStr(v: any): string {
   if (v === null || v === undefined) return ''
@@ -139,29 +138,31 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   // ===== HEADER =====
   const drawHeader = (yTop: number): number => {
-    const brandH = 52  // Altura aumentada
+    const brandH = 52
     page.drawRectangle({ x: M, y: yTop - brandH, width: W, height: brandH, color: BRAND.primary })
 
     const title = K === 'PEDIDO' ? 'PEDIDO DE VENDA' : 'ORÇAMENTO'
     drawText(title, M + W / 2, yTop - 32, { bold: true, size: 16, align: 'center', color: BRAND.white })
 
-    const h = 90   // Altura do bloco de info aumentada
+    const h = 90
     const topBoxY = yTop - brandH - 14
     drawBox(M, topBoxY, W, h, BRAND.bgLight)
 
-    // Centro: Número e Emissão
-    const centerX = M + 150
-    drawText(`Nº ${docNumber(order, K)}`, centerX, topBoxY - 35, { bold: true, size: 13 })
-    drawText(`Data de Emissão: ${formatDatePtBR((order as any).createdAt)}`, centerX, topBoxY - 53, { size: 9.5, color: BRAND.textMuted })
+    // ESQUERDA: Número e Data de Emissão
+    const leftInfoX = M + 12
+    drawText(`Nº ${docNumber(order, K)}`, leftInfoX, topBoxY - 35, { bold: true, size: 13 })
+    drawText(`Data de Emissão: ${formatDatePtBR((order as any).createdAt)}`, leftInfoX, topBoxY - 53, { size: 9.5, color: BRAND.textMuted })
 
-    // Direita: Faturante
+    // DIREITA: Faturante (com maxWidth para evitar quebra)
     const rightX = M + W - 14
-    drawText(FATURANTE.nomeFantasia, rightX, topBoxY - 25, { bold: true, size: 11, align: 'right' })
-    drawText(FATURANTE.razaoSocial, rightX, topBoxY - 40, { size: 8.5, align: 'right', color: BRAND.textMuted })
-    drawText(`CNPJ: ${FATURANTE.cnpj}`, rightX, topBoxY - 54, { size: 8.5, align: 'right' })
-    drawText(`IE: ${FATURANTE.ie}`, rightX, topBoxY - 66, { size: 8.5, align: 'right' })
-    drawText(`${FATURANTE.cidade}/${FATURANTE.uf} • ${FATURANTE.telefone}`, rightX, topBoxY - 78, { size: 8.5, align: 'right' })
-    drawText(FATURANTE.email, rightX, topBoxY - 90, { size: 8.5, align: 'right' })
+    const maxWidthRight = 180 // LIMITE para não extrapolar
+    
+    drawText(FATURANTE.nomeFantasia, rightX, topBoxY - 25, { bold: true, size: 11, align: 'right', maxWidth: maxWidthRight })
+    drawText(FATURANTE.razaoSocial, rightX, topBoxY - 40, { size: 8.5, align: 'right', color: BRAND.textMuted, maxWidth: maxWidthRight })
+    drawText(`CNPJ: ${FATURANTE.cnpj}`, rightX, topBoxY - 54, { size: 8.5, align: 'right', maxWidth: maxWidthRight })
+    drawText(`IE: ${FATURANTE.ie}`, rightX, topBoxY - 66, { size: 8.5, align: 'right', maxWidth: maxWidthRight })
+    drawText(`${FATURANTE.cidade}/${FATURANTE.uf} • ${FATURANTE.telefone}`, rightX, topBoxY - 78, { size: 8.5, align: 'right', maxWidth: maxWidthRight })
+    drawText(FATURANTE.email, rightX, topBoxY - 90, { size: 8.5, align: 'right', maxWidth: maxWidthRight })
 
     return topBoxY - h - 18
   }
@@ -210,7 +211,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   drawSectionTitle('ITENS DO PEDIDO', M + 2, y + 10)
   y -= 16
 
-  // Colunas otimizadas (proporções balanceadas)
+  // Colunas otimizadas com padding adequado
   const col = {
     idx: M + 10,
     sku: M + 42,
@@ -218,11 +219,11 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     und: M + 360,
     qtdR: M + 412,
     unitR: M + 472,
-    subR: M + 542,
+    subR: M + 538,  // Ajustado para não colar na borda (era 542)
   }
 
-  const rowH = 20    // Altura aumentada
-  const headH = 26   // Cabeçalho mais alto
+  const rowH = 20
+  const headH = 26
 
   const drawTableHeader = () => {
     drawBox(M, y, W, headH, BRAND.bgLight)
@@ -279,8 +280,8 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   if (y <= M + 180) newPage()
   y -= 18
 
-  const totalsBoxW = 240   // Largura aumentada
-  const totalsBoxH = 110   // Altura aumentada
+  const totalsBoxW = 240
+  const totalsBoxH = 110
   const totalsX = M + W - totalsBoxW
 
   // Caixa de Totais
