@@ -367,7 +367,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   drawText(`Gerado em ${formatDatePtBR(Date.now())} • ${FATURANTE.nomeFantasia}`, M, footerY, { size: 8, color: cMuted })
 
-    // Download (fix TS on Vercel: ensure BlobPart is ArrayBuffer, not ArrayBufferLike)
+  // Download (fix TS on Vercel: ensure BlobPart is ArrayBuffer, not ArrayBufferLike)
   const pdfBytes = await pdfDoc.save()
 
   // Convert Uint8Array<ArrayBufferLike> -> ArrayBuffer
@@ -387,4 +387,4 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-
+}
