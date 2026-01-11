@@ -4,16 +4,12 @@ import type { Order } from '@/types'
 type PdfKind = 'ORCAMENTO' | 'PEDIDO'
 
 /**
- * PDF (layout tipo / modelo ARCO) + refinado:
- * - Barra roxa com título centralizado
- * - Blocos com hierarquia
- * - Tabela com grid e colunas corrigidas (Qtde, Preço e Subtotal separados)
- * - Totais com destaque
- *
- * Regras:
- * - Sem fotos de produtos
- * - Sem logo por enquanto
- * - Faturante (CDA Foods) no cabeçalho (dados completos)
+ * PDF profissional com layout refinado:
+ * - Cabeçalho roxo elegante com título destacado
+ * - Hierarquia visual clara em todos os blocos
+ * - Tabela otimizada com proporções balanceadas e grid visível
+ * - Blocos de totais e observações com destaque visual
+ * - Tipografia hierárquica e espaçamento profissional
  */
 
 // >>>> EDITAR AQUI (dados da CDA) <<<<
@@ -29,22 +25,23 @@ const FATURANTE = {
   email: 'contato@cdafoods.com.br',
 }
 
-// === BRAND ===
+// === BRAND COLORS ===
 const BRAND = {
-  purple: rgb(0x45 / 255, 0x00 / 255, 0x57 / 255), // #450057
-  purpleDark: rgb(0x30 / 255, 0x00 / 255, 0x3d / 255),
-  bgSoft: rgb(0.97, 0.97, 0.97),
-  text: rgb(0.12, 0.12, 0.12),
-  muted: rgb(0.45, 0.45, 0.45),
-  border: rgb(0.16, 0.16, 0.16),
-  tableHead: rgb(0.93, 0.93, 0.93),
-  zebra: rgb(0.985, 0.985, 0.985),
+  primary: rgb(0x45 / 255, 0x00 / 255, 0x57 / 255),      // #450057
+  primaryDark: rgb(0x30 / 255, 0x00 / 255, 0x3d / 255),  // #30003d
+  success: rgb(0.0, 0.6, 0.0),                           // Verde para totais
+  bgLight: rgb(0.98, 0.98, 0.98),                         // Fundo suave
+  bgZebra: rgb(0.985, 0.985, 0.985),
+  text: rgb(0.08, 0.08, 0.08),                           // Texto principal
+  textMuted: rgb(0.45, 0.45, 0.45),                       // Texto secundário
+  border: rgb(0.85, 0.85, 0.85),                         // Bordas suaves
   white: rgb(1, 1, 1),
 }
 
+// === LAYOUT CONSTANTS ===
 const A4_W = 595.28
 const A4_H = 841.89
-const M = 28 // margem
+const M = 36   // Margem aumentada para ar profissional
 
 function safeStr(v: any): string {
   if (v === null || v === undefined) return ''
@@ -53,14 +50,8 @@ function safeStr(v: any): string {
 
 function formatDatePtBR(value: any): string {
   if (!value) return '-'
-  const d =
-    typeof value === 'number'
-      ? new Date(value)
-      : value?.toDate
-        ? value.toDate()
-        : new Date(value)
-  if (isNaN(d.getTime())) return '-'
-  return d.toLocaleDateString('pt-BR')
+  const d = typeof value === 'number' ? new Date(value) : value?.toDate ? value.toDate() : new Date(value)
+  return isNaN(d.getTime()) ? '-' : d.toLocaleDateString('pt-BR')
 }
 
 function brl(v: number): string {
@@ -89,39 +80,20 @@ function docNumber(order: Order, kind: PdfKind): string {
 
 export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const K = inferKind(order, kind)
-
   const pdfDoc = await PDFDocument.create()
-  let page = pdfDoc.addPage([A4_W, A4_H])
-
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
   const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-
+  
   const W = A4_W - 2 * M
+  let page = pdfDoc.addPage([A4_W, A4_H])
+  let y = A4_H - M
 
+  // ===== HELPERS =====
   const drawBox = (x: number, yTop: number, w: number, h: number, fill?: any, border = true) => {
-    page.drawRectangle({
-      x,
-      y: yTop - h,
-      width: w,
-      height: h,
-      borderColor: border ? BRAND.border : undefined,
-      borderWidth: border ? 1 : 0,
-      color: fill,
-    })
+    page.drawRectangle({ x, y: yTop - h, width: w, height: h, color: fill, borderColor: border ? BRAND.border : undefined, borderWidth: border ? 0.8 : 0 })
   }
 
-  const drawText = (
-    text: string,
-    x: number,
-    y: number,
-    opts?: {
-      bold?: boolean
-      size?: number
-      color?: any
-      maxWidth?: number
-      align?: 'left' | 'right' | 'center'
-    }
-  ) => {
+  const drawText = (text: string, x: number, y: number, opts?: { bold?: boolean; size?: number; color?: any; maxWidth?: number; align?: 'left' | 'right' | 'center' }) => {
     const size = opts?.size ?? 9
     const f = opts?.bold ? fontB : font
     const color = opts?.color ?? BRAND.text
@@ -129,18 +101,15 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
     if (opts?.align && opts.align !== 'left') {
       const w = f.widthOfTextAtSize(t, size)
-      let xx = x
-      if (opts.align === 'right') xx = x - w
-      if (opts.align === 'center') xx = x - w / 2
+      const xx = opts.align === 'right' ? x - w : x - w / 2
       page.drawText(t, { x: xx, y, size, font: f, color, maxWidth: opts?.maxWidth })
       return
     }
-
     page.drawText(t, { x, y, size, font: f, color, maxWidth: opts?.maxWidth })
   }
 
   const drawSectionTitle = (title: string, x: number, yTop: number) => {
-    drawText(title, x, yTop - 12, { bold: true, size: 10, color: BRAND.purple })
+    drawText(title, x, yTop - 12, { bold: true, size: 10.5, color: BRAND.primaryDark })
   }
 
   const drawKV = (label: string, value: string, x: number, y: number, w: number) => {
@@ -170,44 +139,33 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   // ===== HEADER =====
   const drawHeader = (yTop: number): number => {
-    const brandH = 44
-    page.drawRectangle({ x: M, y: yTop - brandH, width: W, height: brandH, color: BRAND.purple })
+    const brandH = 52  // Altura aumentada
+    page.drawRectangle({ x: M, y: yTop - brandH, width: W, height: brandH, color: BRAND.primary })
 
-    const title = K === 'PEDIDO' ? 'PEDIDO' : 'ORÇAMENTO'
-    drawText(title, M + W / 2, yTop - 28, { bold: true, size: 15, align: 'center', color: BRAND.white })
+    const title = K === 'PEDIDO' ? 'PEDIDO DE VENDA' : 'ORÇAMENTO'
+    drawText(title, M + W / 2, yTop - 32, { bold: true, size: 16, align: 'center', color: BRAND.white })
 
-    const h = 78
-    const topBoxY = yTop - brandH - 10
-    drawBox(M, topBoxY, W, h, BRAND.bgSoft)
+    const h = 90   // Altura do bloco de info aumentada
+    const topBoxY = yTop - brandH - 14
+    drawBox(M, topBoxY, W, h, BRAND.bgLight)
 
-    // Centro: número e emissão
-    drawText(`Nº ${docNumber(order, K)}`, M + W / 2, topBoxY - 26, { bold: true, size: 12, align: 'center' })
-    drawText(`Emissão: ${formatDatePtBR((order as any).createdAt)}`, M + W / 2, topBoxY - 44, {
-      size: 9,
-      align: 'center',
-      color: BRAND.text,
-    })
+    // Centro: Número e Emissão
+    const centerX = M + 150
+    drawText(`Nº ${docNumber(order, K)}`, centerX, topBoxY - 35, { bold: true, size: 13 })
+    drawText(`Data de Emissão: ${formatDatePtBR((order as any).createdAt)}`, centerX, topBoxY - 53, { size: 9.5, color: BRAND.textMuted })
 
-    // Direita: faturante
-    const rightX = M + W - 12
-    drawText(FATURANTE.nomeFantasia, rightX, topBoxY - 18, { bold: true, size: 10, align: 'right' })
-    drawText(FATURANTE.razaoSocial, rightX, topBoxY - 32, { size: 8, align: 'right', color: BRAND.muted })
-    drawText(`CNPJ: ${FATURANTE.cnpj}  |  IE: ${FATURANTE.ie}`, rightX, topBoxY - 44, {
-      size: 8,
-      align: 'right',
-      color: BRAND.text,
-    })
-    drawText(`${FATURANTE.cidade}/${FATURANTE.uf} • ${FATURANTE.telefone}`, rightX, topBoxY - 56, {
-      size: 8,
-      align: 'right',
-      color: BRAND.text,
-    })
-    drawText(FATURANTE.email, rightX, topBoxY - 68, { size: 8, align: 'right', color: BRAND.text })
+    // Direita: Faturante
+    const rightX = M + W - 14
+    drawText(FATURANTE.nomeFantasia, rightX, topBoxY - 25, { bold: true, size: 11, align: 'right' })
+    drawText(FATURANTE.razaoSocial, rightX, topBoxY - 40, { size: 8.5, align: 'right', color: BRAND.textMuted })
+    drawText(`CNPJ: ${FATURANTE.cnpj}`, rightX, topBoxY - 54, { size: 8.5, align: 'right' })
+    drawText(`IE: ${FATURANTE.ie}`, rightX, topBoxY - 66, { size: 8.5, align: 'right' })
+    drawText(`${FATURANTE.cidade}/${FATURANTE.uf} • ${FATURANTE.telefone}`, rightX, topBoxY - 78, { size: 8.5, align: 'right' })
+    drawText(FATURANTE.email, rightX, topBoxY - 90, { size: 8.5, align: 'right' })
 
-    return topBoxY - h - 14
+    return topBoxY - h - 18
   }
 
-  let y = A4_H - M
   y = drawHeader(y)
 
   const newPage = () => {
@@ -216,7 +174,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     y = drawHeader(y)
   }
 
-  // ===== BLOCO CLIENTE =====
+  // ===== CLIENTE BLOCK =====
   const c = (order as any).customerSnapshot || {}
   const cName = safeStr(c.name)
   const cDoc = safeStr(c.doc)
@@ -225,89 +183,63 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const cAddr = safeStr(c.address)
 
   const blockH = 98
-  drawBox(M, y, W, blockH, undefined)
+  drawBox(M, y, W, blockH)
 
-  drawSectionTitle('DADOS DO CLIENTE', M + 10, y)
+  drawSectionTitle('DADOS DO CLIENTE', M + 12, y)
 
-  const x1 = M + 10
-  const x2 = M + W / 2 + 10
-  const topY = y - 34
+  const x1 = M + 12
+  const x2 = M + W / 2 + 12
+  const topY = y - 36
 
-  drawKV('Cliente', cName, x1, topY, W / 2 - 20)
-  drawKV('Documento', cDoc, x1, topY - 14, W / 2 - 20)
-  drawKV('Telefone', cPhone, x1, topY - 28, W / 2 - 20)
+  drawKV('Cliente', cName, x1, topY, W / 2 - 24)
+  drawKV('Documento', cDoc, x1, topY - 16, W / 2 - 24)
+  drawKV('Telefone', cPhone, x1, topY - 32, W / 2 - 24)
 
-  drawKV('E-mail', cEmail, x2, topY, W / 2 - 20)
+  drawKV('E-mail', cEmail, x2, topY, W / 2 - 24)
 
   const addrLabel = 'Endereço:'
-  drawText(addrLabel, x2, topY - 14, { bold: true, size: 9 })
+  drawText(addrLabel, x2, topY - 16, { bold: true, size: 9 })
   const lw = fontB.widthOfTextAtSize(addrLabel, 9)
-  const addrLines = cAddr ? wrapText(cAddr, (W / 2 - 20) - lw - 4, 9).slice(0, 2) : ['—']
-  drawText(addrLines[0], x2 + lw + 4, topY - 14, { size: 9, maxWidth: W / 2 - 20 - lw - 4 })
-  if (addrLines[1]) drawText(addrLines[1], x2 + lw + 4, topY - 26, { size: 9, maxWidth: W / 2 - 20 - lw - 4 })
+  const addrLines = cAddr ? wrapText(cAddr, (W / 2 - 24) - lw - 4, 9).slice(0, 2) : ['—']
+  drawText(addrLines[0], x2 + lw + 4, topY - 16, { size: 9, maxWidth: W / 2 - 24 - lw - 4 })
+  if (addrLines[1]) drawText(addrLines[1], x2 + lw + 4, topY - 28, { size: 9, maxWidth: W / 2 - 24 - lw - 4 })
 
-  y = y - blockH - 16
+  y -= blockH + 22
 
-  // ===== TABELA (GRID) =====
-  drawSectionTitle('ITENS', M + 2, y + 8)
-  y -= 12
+  // ===== TABLE =====
+  drawSectionTitle('ITENS DO PEDIDO', M + 2, y + 10)
+  y -= 16
 
-  /**
-   * Colunas finais (corretas):
-   * ... | Unid | Qtde | Preço | Subtotal
-   *
-   * - Subtotal no final
-   * - Preço 92px antes do final
-   * - Qtde 54px antes do Preço (coluna real, alinhada à direita)
-   */
-  const subRight = M + W - 10
-  const unitRight = subRight - 92
-  const qtdRight = unitRight - 54
-
+  // Colunas otimizadas (proporções balanceadas)
   const col = {
     idx: M + 10,
-    sku: M + 46,
-    prod: M + 140,
+    sku: M + 42,
+    prod: M + 135,
     und: M + 360,
-    qtdR: qtdRight,
-    unitR: unitRight,
-    subR: subRight,
+    qtdR: M + 412,
+    unitR: M + 472,
+    subR: M + 542,
   }
 
-  const rowH = 18
-  const headH = 22
-
-  // divisores verticais (bordas de coluna)
-  const gridXs = [
-    M,
-    col.sku - 12,
-    col.prod - 12,
-    col.und - 12,
-    qtdRight - 12, // divisor antes de Qtde
-    unitRight - 12, // divisor antes de Preço
-    M + W,
-  ]
+  const rowH = 20    // Altura aumentada
+  const headH = 26   // Cabeçalho mais alto
 
   const drawTableHeader = () => {
-    drawBox(M, y, W, headH, BRAND.tableHead)
+    drawBox(M, y, W, headH, BRAND.bgLight)
 
-    const ty = y - 15
-    drawText('#', col.idx, ty, { bold: true, size: 9 })
-    drawText('Código', col.sku, ty, { bold: true, size: 9 })
-    drawText('Produto', col.prod, ty, { bold: true, size: 9 })
-    drawText('Unid.', col.und, ty, { bold: true, size: 9 })
-    drawText('Qtde.', col.qtdR, ty, { bold: true, size: 9, align: 'right' })
-    drawText('Preço', col.unitR, ty, { bold: true, size: 9, align: 'right' })
-    drawText('Subtotal', col.subR, ty, { bold: true, size: 9, align: 'right' })
-
-    const y0 = y - headH
-    const y1 = y
-    gridXs.forEach((x) => page.drawLine({ start: { x, y: y0 }, end: { x, y: y1 }, thickness: 1, color: BRAND.border }))
+    const ty = y - 17
+    drawText('#', col.idx, ty, { bold: true, size: 9.5 })
+    drawText('Código', col.sku, ty, { bold: true, size: 9.5 })
+    drawText('Produto', col.prod, ty, { bold: true, size: 9.5 })
+    drawText('Unid.', col.und, ty, { bold: true, size: 9.5 })
+    drawText('Qtde.', col.qtdR, ty, { bold: true, size: 9.5, align: 'right' })
+    drawText('Preço Unit.', col.unitR, ty, { bold: true, size: 9.5, align: 'right' })
+    drawText('Subtotal', col.subR, ty, { bold: true, size: 9.5, align: 'right' })
 
     y -= headH
   }
 
-  const needNewPageForRow = () => y - rowH <= M + 200
+  const needNewPageForRow = () => y - rowH <= M + 180
 
   drawTableHeader()
 
@@ -315,16 +247,16 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   items.forEach((it: any, idx: number) => {
     if (needNewPageForRow()) {
       newPage()
-      y -= 8
-      drawSectionTitle('ITENS (continuação)', M + 2, y + 8)
       y -= 12
+      drawSectionTitle('ITENS DO PEDIDO (CONTINUAÇÃO)', M + 2, y + 10)
+      y -= 16
       drawTableHeader()
     }
 
     const isZebra = idx % 2 === 1
-    drawBox(M, y, W, rowH, isZebra ? BRAND.zebra : undefined)
+    if (isZebra) drawBox(M, y, W, rowH, BRAND.bgZebra)
 
-    const yText = y - 13
+    const yText = y - 14
     const sku = safeStr(it?.productSnapshot?.sku || it?.sku)
     const name = safeStr(it?.productSnapshot?.name || it?.name)
     const unit = safeStr(it?.productSnapshot?.unit || it?.unit)
@@ -332,32 +264,29 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     const unitPrice = Number(it?.unitPrice ?? 0)
     const subtotal = n2(qty * unitPrice)
 
-    drawText(String(idx + 1), col.idx, yText, { size: 9 })
-    drawText(sku || '—', col.sku, yText, { size: 9 })
-    drawText(name || '—', col.prod, yText, { size: 9, maxWidth: col.und - col.prod - 16 })
-    drawText(unit || '—', col.und, yText, { size: 9 })
-    drawText(String(qty || 0), col.qtdR, yText, { size: 9, align: 'right' })
-    drawText(brl(unitPrice), col.unitR, yText, { size: 9, align: 'right' })
-    drawText(brl(subtotal), col.subR, yText, { size: 9, align: 'right' })
-
-    const y0 = y - rowH
-    const y1 = y
-    gridXs.forEach((x) => page.drawLine({ start: { x, y: y0 }, end: { x, y: y1 }, thickness: 1, color: BRAND.border }))
+    drawText(String(idx + 1), col.idx, yText, { size: 9.5 })
+    drawText(sku || '—', col.sku, yText, { size: 9.5 })
+    drawText(name || '—', col.prod, yText, { size: 9.5, maxWidth: col.und - col.prod - 10 })
+    drawText(unit || '—', col.und, yText, { size: 9.5 })
+    drawText(String(qty || 0), col.qtdR, yText, { size: 9.5, align: 'right' })
+    drawText(brl(unitPrice), col.unitR, yText, { size: 9.5, align: 'right' })
+    drawText(brl(subtotal), col.subR, yText, { size: 9.5, align: 'right' })
 
     y -= rowH
   })
 
-  // ===== TOTAIS + OBS =====
-  if (y <= M + 200) newPage()
-  y -= 14
+  // ===== TOTALS & NOTES =====
+  if (y <= M + 180) newPage()
+  y -= 18
 
-  const totalsBoxW = 230
-  const totalsBoxH = 98
+  const totalsBoxW = 240   // Largura aumentada
+  const totalsBoxH = 110   // Altura aumentada
   const totalsX = M + W - totalsBoxW
 
+  // Caixa de Totais
   drawBox(totalsX, y, totalsBoxW, totalsBoxH)
-  page.drawRectangle({ x: totalsX, y: y - 18, width: totalsBoxW, height: 18, color: BRAND.purpleDark })
-  drawText('TOTAIS', totalsX + 10, y - 13, { bold: true, size: 10, color: BRAND.white })
+  page.drawRectangle({ x: totalsX, y: y - 20, width: totalsBoxW, height: 20, color: BRAND.primaryDark })
+  drawText('TOTAIS', totalsX + 12, y - 14, { bold: true, size: 11, color: BRAND.white })
 
   const t = (order as any).totals || { subtotal: 0, discount: 0, freight: 0, total: 0 }
   const subtotal = n2(Number(t.subtotal ?? 0))
@@ -365,63 +294,53 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const freight = n2(Number(t.freight ?? 0))
   const total = n2(Number(t.total ?? subtotal - discount + freight))
 
-  const tx = totalsX + 10
-  const ty = y - 40
+  const tx = totalsX + 12
+  const ty = y - 44
 
-  drawText('Subtotal:', tx, ty, { size: 9 })
-  drawText(brl(subtotal), totalsX + totalsBoxW - 10, ty, { size: 9, align: 'right' })
+  drawText('Subtotal:', tx, ty, { size: 10 })
+  drawText(brl(subtotal), totalsX + totalsBoxW - 12, ty, { size: 10, align: 'right' })
 
-  drawText('Desconto:', tx, ty - 14, { size: 9 })
-  drawText(brl(discount), totalsX + totalsBoxW - 10, ty - 14, { size: 9, align: 'right' })
+  drawText('Desconto:', tx, ty - 16, { size: 10 })
+  drawText(brl(discount), totalsX + totalsBoxW - 12, ty - 16, { size: 10, align: 'right' })
 
-  drawText('Frete:', tx, ty - 28, { size: 9 })
-  drawText(brl(freight), totalsX + totalsBoxW - 10, ty - 28, { size: 9, align: 'right' })
+  drawText('Frete:', tx, ty - 32, { size: 10 })
+  drawText(brl(freight), totalsX + totalsBoxW - 12, ty - 32, { size: 10, align: 'right' })
 
-  page.drawLine({
-    start: { x: totalsX + 10, y: ty - 36 },
-    end: { x: totalsX + totalsBoxW - 10, y: ty - 36 },
-    thickness: 1,
-    color: BRAND.border,
-  })
+  page.drawLine({ start: { x: totalsX + 12, y: ty - 40 }, end: { x: totalsX + totalsBoxW - 12, y: ty - 40 }, thickness: 1, color: BRAND.border })
 
-  drawText('TOTAL:', tx, ty - 54, { bold: true, size: 11, color: BRAND.purple })
-  drawText(brl(total), totalsX + totalsBoxW - 10, ty - 54, { bold: true, size: 11, align: 'right', color: BRAND.purple })
+  drawText('TOTAL:', tx, ty - 58, { bold: true, size: 13, color: BRAND.primary })
+  drawText(brl(total), totalsX + totalsBoxW - 12, ty - 58, { bold: true, size: 13, align: 'right', color: BRAND.primary })
 
   // Observações
   const notesX = M
-  const notesW = W - totalsBoxW - 12
+  const notesW = W - totalsBoxW - 16
   const notesH = totalsBoxH
 
   drawBox(notesX, y, notesW, notesH)
-  page.drawRectangle({ x: notesX, y: y - 18, width: notesW, height: 18, color: BRAND.bgSoft })
-  drawText('OBSERVAÇÕES', notesX + 10, y - 13, { bold: true, size: 10, color: BRAND.purple })
+  page.drawRectangle({ x: notesX, y: y - 20, width: notesW, height: 20, color: BRAND.bgLight })
+  drawText('OBSERVAÇÕES', notesX + 12, y - 14, { bold: true, size: 10.5, color: BRAND.primaryDark })
 
   const notes = safeStr((order as any).notes)
-  const maxNotesWidth = notesW - 20
-  const noteLines = notes ? wrapText(notes, maxNotesWidth, 9).slice(0, 6) : ['—']
-  let ny = y - 40
+  const maxNotesWidth = notesW - 24
+  const noteLines = notes ? wrapText(notes, maxNotesWidth, 9.5).slice(0, 6) : ['—']
+  let ny = y - 44
   noteLines.forEach((ln) => {
-    drawText(ln, notesX + 10, ny, { size: 9, maxWidth: maxNotesWidth })
+    drawText(ln, notesX + 12, ny, { size: 9.5, maxWidth: maxNotesWidth })
     ny -= 12
   })
 
-  y -= totalsBoxH + 18
+  y -= totalsBoxH + 24
 
-  // ===== RODAPÉ =====
-  const footerY = M + 22
-  page.drawLine({
-    start: { x: M, y: footerY + 10 },
-    end: { x: A4_W - M, y: footerY + 10 },
-    thickness: 1,
-    color: BRAND.border,
+  // ===== FOOTER =====
+  const footerY = M + 24
+  page.drawLine({ start: { x: M, y: footerY + 10 }, end: { x: A4_W - M, y: footerY + 10 }, thickness: 0.8, color: BRAND.border })
+
+  drawText(`Documento gerado em ${formatDatePtBR(Date.now())} • ${FATURANTE.nomeFantasia}`, M, footerY, {
+    size: 8.5,
+    color: BRAND.textMuted,
   })
 
-  drawText(`Gerado em ${formatDatePtBR(Date.now())} • ${FATURANTE.nomeFantasia}`, M, footerY, {
-    size: 8,
-    color: BRAND.muted,
-  })
-
-  // ===== DOWNLOAD (TS safe) =====
+  // ===== DOWNLOAD =====
   const pdfBytes = await pdfDoc.save()
   const ab = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength) as ArrayBuffer
 
