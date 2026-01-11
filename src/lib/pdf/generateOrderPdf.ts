@@ -4,18 +4,14 @@ import type { Order } from '@/types'
 type PdfKind = 'ORCAMENTO' | 'PEDIDO'
 
 /**
- * PDF (layout tipo Mercos / modelo ARCO):
+ * PDF:
  * - Cabeçalho estruturado
  * - Blocos de cadastro
  * - Tabela com grid
  * - Caixa de totais
  * - Rodapé
  *
- * Regras:
- * - Sem fotos de produtos
- * - Faturante (CDA Foods) no cabeçalho (dados completos)
- *
- * Ajuste os dados do faturante UMA vez aqui e acabou.
+ * 
  */
 const FATURANTE = {
   razaoSocial: 'CDA FOODS LTDA',
@@ -371,9 +367,16 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   drawText(`Gerado em ${formatDatePtBR(Date.now())} • ${FATURANTE.nomeFantasia}`, M, footerY, { size: 8, color: cMuted })
 
-  // Download
+    // Download (fix TS on Vercel: ensure BlobPart is ArrayBuffer, not ArrayBufferLike)
   const pdfBytes = await pdfDoc.save()
-  const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+
+  // Convert Uint8Array<ArrayBufferLike> -> ArrayBuffer
+  const ab = pdfBytes.buffer.slice(
+    pdfBytes.byteOffset,
+    pdfBytes.byteOffset + pdfBytes.byteLength
+  ) as ArrayBuffer
+
+  const blob = new Blob([ab], { type: 'application/pdf' })
   const url = URL.createObjectURL(blob)
 
   const a = document.createElement('a')
@@ -384,4 +387,4 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-}
+
