@@ -5,15 +5,18 @@ type PdfKind = 'ORCAMENTO' | 'PEDIDO'
 
 /**
  * PDF (layout tipo Mercos / modelo ARCO) + refinado:
- * - Barra de marca com logo (public/brand/sagrado-logo-negativo.png)
- * - Hierarquia de texto e espaçamento melhores
- * - Tabela com grid limpo, alinhamento e cabeçalho “com cara”
- * - Caixa de totais destacada
+ * - Barra de marca com título centralizado
+ * - Blocos com hierarquia
+ * - Tabela com grid e colunas corrigidas (Preço e Subtotal não colam)
+ * - Totais com destaque
  *
  * Regras:
  * - Sem fotos de produtos
+ * - Sem logo por enquanto (removida)
  * - Faturante (CDA Foods) no cabeçalho (dados completos)
  */
+
+// >>>> EDITAR AQUI (dados da CDA) <<<<
 const FATURANTE = {
   razaoSocial: 'CDA FOODS LTDA',
   nomeFantasia: 'CDA Foods',
@@ -28,7 +31,6 @@ const FATURANTE = {
 
 // === BRAND ===
 const BRAND = {
-  // roxo padrão (estética Sagrado)
   purple: rgb(0x45 / 255, 0x00 / 255, 0x57 / 255), // #450057
   purpleDark: rgb(0x30 / 255, 0x00 / 255, 0x3d / 255),
   bgSoft: rgb(0.97, 0.97, 0.97),
@@ -39,8 +41,6 @@ const BRAND = {
   zebra: rgb(0.985, 0.985, 0.985),
   white: rgb(1, 1, 1),
 }
-
-const LOGO_PATH = '/brand/sagrado-logo-negativo.png'
 
 const A4_W = 595.28
 const A4_H = 841.89
@@ -87,18 +87,6 @@ function docNumber(order: Order, kind: PdfKind): string {
   return `${prefix}-${raw}`
 }
 
-// Fetch logo from /public
-async function tryLoadLogoBytes(): Promise<Uint8Array | null> {
-  try {
-    const res = await fetch(LOGO_PATH, { cache: 'force-cache' })
-    if (!res.ok) return null
-    const ab = await res.arrayBuffer()
-    return new Uint8Array(ab)
-  } catch {
-    return null
-  }
-}
-
 export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const K = inferKind(order, kind)
 
@@ -109,17 +97,6 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
   const W = A4_W - 2 * M
-
-  // Try embed logo (PNG) – non-blocking
-  let logoPng: any = null
-  const logoBytes = await tryLoadLogoBytes()
-  if (logoBytes) {
-    try {
-      logoPng = await pdfDoc.embedPng(logoBytes)
-    } catch {
-      logoPng = null
-    }
-  }
 
   const drawBox = (x: number, yTop: number, w: number, h: number, fill?: any, border = true) => {
     page.drawRectangle({
@@ -163,7 +140,6 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   }
 
   const drawSectionTitle = (title: string, x: number, yTop: number) => {
-    // small label
     drawText(title, x, yTop - 12, { bold: true, size: 10, color: BRAND.purple })
   }
 
@@ -192,54 +168,31 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     return lines
   }
 
-  // ===== HEADER (Mercos-like refined) =====
+  // ===== HEADER (refinado) =====
   const drawHeader = (yTop: number): number => {
-    // Brand bar
+    // Barra roxa
     const brandH = 44
     page.drawRectangle({ x: M, y: yTop - brandH, width: W, height: brandH, color: BRAND.purple })
 
-    // Logo (left)
-    const leftX = M + 12
-    const brandMidY = yTop - brandH / 2
-
-    if (logoPng) {
-      // keep proportions, fit into 28px height
-      const targetH = 26
-      const scale = targetH / logoPng.height
-      const imgW = logoPng.width * scale
-      const imgH = logoPng.height * scale
-      page.drawImage(logoPng, {
-        x: leftX,
-        y: brandMidY - imgH / 2,
-        width: imgW,
-        height: imgH,
-      })
-    } else {
-      // fallback
-      drawText('SAGRADO', leftX, brandMidY - 7, { bold: true, size: 14, color: BRAND.white })
-    }
-
-    // Center title
+    // Título centralizado (sem logo)
     const title = K === 'PEDIDO' ? 'PEDIDO' : 'ORÇAMENTO'
-    drawText(title, M + W / 2, yTop - 18, { bold: true, size: 14, align: 'center', color: BRAND.white })
+    // “baseline” visual melhor pra centralizar na barra
+    drawText(title, M + W / 2, yTop - 28, { bold: true, size: 15, align: 'center', color: BRAND.white })
 
-    // Document box under bar
-    const h = 76
+    // Caixa do cabeçalho (dados do doc + faturante)
+    const h = 78
     const topBoxY = yTop - brandH - 10
     drawBox(M, topBoxY, W, h, BRAND.bgSoft)
 
-    // Left: system meta
-    drawText('Sistema de Pedidos', M + 12, topBoxY - 18, { size: 9, color: BRAND.muted })
-
-    // Center: doc number/date (bigger)
-    drawText(`Nº ${docNumber(order, K)}`, M + W / 2, topBoxY - 22, { bold: true, size: 12, align: 'center' })
-    drawText(`Emissão: ${formatDatePtBR((order as any).createdAt)}`, M + W / 2, topBoxY - 40, {
+    // Centro: número e emissão
+    drawText(`Nº ${docNumber(order, K)}`, M + W / 2, topBoxY - 26, { bold: true, size: 12, align: 'center' })
+    drawText(`Emissão: ${formatDatePtBR((order as any).createdAt)}`, M + W / 2, topBoxY - 44, {
       size: 9,
       align: 'center',
       color: BRAND.text,
     })
 
-    // Right: faturante
+    // Direita: faturante
     const rightX = M + W - 12
     drawText(FATURANTE.nomeFantasia, rightX, topBoxY - 18, { bold: true, size: 10, align: 'right' })
     drawText(FATURANTE.razaoSocial, rightX, topBoxY - 32, { size: 8, align: 'right', color: BRAND.muted })
@@ -290,7 +243,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   drawKV('E-mail', cEmail, x2, topY, W / 2 - 20)
 
-  // Endereço (wrap)
+  // Endereço (wrap 2 linhas)
   const addrLabel = 'Endereço:'
   drawText(addrLabel, x2, topY - 14, { bold: true, size: 9 })
   const lw = fontB.widthOfTextAtSize(addrLabel, 9)
@@ -304,15 +257,23 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   drawSectionTitle('ITENS', M + 2, y + 8)
   y -= 12
 
-  // Ajuste de colunas (mais respiro pra “Preço” e “Subtotal” não grudarem)
+  /**
+   * CORREÇÃO PRINCIPAL:
+   * - Reserva um “corredor” entre Preço e Subtotal
+   * - Unit fica ~90px antes do final (o suficiente pra "R$ 999.999,99")
+   * - Subtotal no final
+   */
+  const subRight = M + W - 10
+  const unitRight = subRight - 92 // <<< gap fixo pra não colar
+
   const col = {
     idx: M + 10,
     sku: M + 46,
     prod: M + 140,
-    und: M + 372,
-    qtd: M + 418,
-    unit: M + 500, // alinhado à direita
-    sub: M + W - 10, // alinhado à direita
+    und: M + 360,
+    qtd: M + 408,
+    unitR: unitRight,
+    subR: subRight,
   }
 
   const rowH = 18
@@ -324,7 +285,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     col.prod - 12,
     col.und - 12,
     col.qtd - 12,
-    col.unit - 12,
+    unitRight - 12, // divisor antes da coluna Preço
     M + W,
   ]
 
@@ -337,10 +298,9 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     drawText('Produto', col.prod, ty, { bold: true, size: 9 })
     drawText('Unid.', col.und, ty, { bold: true, size: 9 })
     drawText('Qtde.', col.qtd, ty, { bold: true, size: 9 })
-    drawText('Preço', col.unit, ty, { bold: true, size: 9, align: 'right' })
-    drawText('Subtotal', col.sub, ty, { bold: true, size: 9, align: 'right' })
+    drawText('Preço', col.unitR, ty, { bold: true, size: 9, align: 'right' })
+    drawText('Subtotal', col.subR, ty, { bold: true, size: 9, align: 'right' })
 
-    // linhas verticais do cabeçalho
     const y0 = y - headH
     const y1 = y
     gridXs.forEach((x) => page.drawLine({ start: { x, y: y0 }, end: { x, y: y1 }, thickness: 1, color: BRAND.border }))
@@ -362,7 +322,6 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
       drawTableHeader()
     }
 
-    // zebra
     const isZebra = idx % 2 === 1
     drawBox(M, y, W, rowH, isZebra ? BRAND.zebra : undefined)
 
@@ -379,10 +338,9 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     drawText(name || '—', col.prod, yText, { size: 9, maxWidth: col.und - col.prod - 16 })
     drawText(unit || '—', col.und, yText, { size: 9 })
     drawText(String(qty || 0), col.qtd, yText, { size: 9 })
-    drawText(brl(unitPrice), col.unit, yText, { size: 9, align: 'right' })
-    drawText(brl(subtotal), col.sub, yText, { size: 9, align: 'right' })
+    drawText(brl(unitPrice), col.unitR, yText, { size: 9, align: 'right' })
+    drawText(brl(subtotal), col.subR, yText, { size: 9, align: 'right' })
 
-    // grid da linha
     const y0 = y - rowH
     const y1 = y
     gridXs.forEach((x) => page.drawLine({ start: { x, y: y0 }, end: { x, y: y1 }, thickness: 1, color: BRAND.border }))
@@ -392,22 +350,14 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   // ===== TOTAIS + OBS =====
   if (y <= M + 200) newPage()
-
   y -= 14
 
   const totalsBoxW = 230
   const totalsBoxH = 98
   const totalsX = M + W - totalsBoxW
 
-  // Caixa Totais com leve destaque (borda + topo roxo)
   drawBox(totalsX, y, totalsBoxW, totalsBoxH)
-  page.drawRectangle({
-    x: totalsX,
-    y: y - 18,
-    width: totalsBoxW,
-    height: 18,
-    color: BRAND.purpleDark,
-  })
+  page.drawRectangle({ x: totalsX, y: y - 18, width: totalsBoxW, height: 18, color: BRAND.purpleDark })
   drawText('TOTAIS', totalsX + 10, y - 13, { bold: true, size: 10, color: BRAND.white })
 
   const t = (order as any).totals || { subtotal: 0, discount: 0, freight: 0, total: 0 }
@@ -444,13 +394,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const notesH = totalsBoxH
 
   drawBox(notesX, y, notesW, notesH)
-  page.drawRectangle({
-    x: notesX,
-    y: y - 18,
-    width: notesW,
-    height: 18,
-    color: BRAND.bgSoft,
-  })
+  page.drawRectangle({ x: notesX, y: y - 18, width: notesW, height: 18, color: BRAND.bgSoft })
   drawText('OBSERVAÇÕES', notesX + 10, y - 13, { bold: true, size: 10, color: BRAND.purple })
 
   const notes = safeStr((order as any).notes)
@@ -473,12 +417,13 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     color: BRAND.border,
   })
 
-  drawText(`Gerado em ${formatDatePtBR(Date.now())} • ${FATURANTE.nomeFantasia}`, M, footerY, { size: 8, color: BRAND.muted })
+  drawText(`Gerado em ${formatDatePtBR(Date.now())} • ${FATURANTE.nomeFantasia}`, M, footerY, {
+    size: 8,
+    color: BRAND.muted,
+  })
 
   // ===== DOWNLOAD (TS safe) =====
   const pdfBytes = await pdfDoc.save()
-
-  // Convert Uint8Array<ArrayBufferLike> -> ArrayBuffer
   const ab = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength) as ArrayBuffer
 
   const blob = new Blob([ab], { type: 'application/pdf' })
