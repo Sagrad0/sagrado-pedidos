@@ -4,15 +4,15 @@ import type { Order } from '@/types'
 type PdfKind = 'ORCAMENTO' | 'PEDIDO'
 
 /**
- * PDF (layout tipo Mercos / modelo ARCO) + refinado:
- * - Barra de marca com título centralizado
+ * PDF (layout tipo / modelo ARCO) + refinado:
+ * - Barra roxa com título centralizado
  * - Blocos com hierarquia
- * - Tabela com grid e colunas corrigidas (Preço e Subtotal não colam)
+ * - Tabela com grid e colunas corrigidas (Qtde, Preço e Subtotal separados)
  * - Totais com destaque
  *
  * Regras:
  * - Sem fotos de produtos
- * - Sem logo por enquanto (removida)
+ * - Sem logo por enquanto
  * - Faturante (CDA Foods) no cabeçalho (dados completos)
  */
 
@@ -168,18 +168,14 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     return lines
   }
 
-  // ===== HEADER (refinado) =====
+  // ===== HEADER =====
   const drawHeader = (yTop: number): number => {
-    // Barra roxa
     const brandH = 44
     page.drawRectangle({ x: M, y: yTop - brandH, width: W, height: brandH, color: BRAND.purple })
 
-    // Título centralizado (sem logo)
     const title = K === 'PEDIDO' ? 'PEDIDO' : 'ORÇAMENTO'
-    // “baseline” visual melhor pra centralizar na barra
     drawText(title, M + W / 2, yTop - 28, { bold: true, size: 15, align: 'center', color: BRAND.white })
 
-    // Caixa do cabeçalho (dados do doc + faturante)
     const h = 78
     const topBoxY = yTop - brandH - 10
     drawBox(M, topBoxY, W, h, BRAND.bgSoft)
@@ -243,7 +239,6 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   drawKV('E-mail', cEmail, x2, topY, W / 2 - 20)
 
-  // Endereço (wrap 2 linhas)
   const addrLabel = 'Endereço:'
   drawText(addrLabel, x2, topY - 14, { bold: true, size: 9 })
   const lw = fontB.widthOfTextAtSize(addrLabel, 9)
@@ -258,20 +253,23 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   y -= 12
 
   /**
-   * CORREÇÃO PRINCIPAL:
-   * - Reserva um “corredor” entre Preço e Subtotal
-   * - Unit fica ~90px antes do final (o suficiente pra "R$ 999.999,99")
+   * Colunas finais (corretas):
+   * ... | Unid | Qtde | Preço | Subtotal
+   *
    * - Subtotal no final
+   * - Preço 92px antes do final
+   * - Qtde 54px antes do Preço (coluna real, alinhada à direita)
    */
   const subRight = M + W - 10
-  const unitRight = subRight - 92 // <<< gap fixo pra não colar
+  const unitRight = subRight - 92
+  const qtdRight = unitRight - 54
 
   const col = {
     idx: M + 10,
     sku: M + 46,
     prod: M + 140,
     und: M + 360,
-    qtd: M + 408,
+    qtdR: qtdRight,
     unitR: unitRight,
     subR: subRight,
   }
@@ -279,13 +277,14 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const rowH = 18
   const headH = 22
 
+  // divisores verticais (bordas de coluna)
   const gridXs = [
     M,
     col.sku - 12,
     col.prod - 12,
     col.und - 12,
-    col.qtd - 12,
-    unitRight - 12, // divisor antes da coluna Preço
+    qtdRight - 12, // divisor antes de Qtde
+    unitRight - 12, // divisor antes de Preço
     M + W,
   ]
 
@@ -297,7 +296,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     drawText('Código', col.sku, ty, { bold: true, size: 9 })
     drawText('Produto', col.prod, ty, { bold: true, size: 9 })
     drawText('Unid.', col.und, ty, { bold: true, size: 9 })
-    drawText('Qtde.', col.qtd, ty, { bold: true, size: 9 })
+    drawText('Qtde.', col.qtdR, ty, { bold: true, size: 9, align: 'right' })
     drawText('Preço', col.unitR, ty, { bold: true, size: 9, align: 'right' })
     drawText('Subtotal', col.subR, ty, { bold: true, size: 9, align: 'right' })
 
@@ -337,7 +336,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     drawText(sku || '—', col.sku, yText, { size: 9 })
     drawText(name || '—', col.prod, yText, { size: 9, maxWidth: col.und - col.prod - 16 })
     drawText(unit || '—', col.und, yText, { size: 9 })
-    drawText(String(qty || 0), col.qtd, yText, { size: 9 })
+    drawText(String(qty || 0), col.qtdR, yText, { size: 9, align: 'right' })
     drawText(brl(unitPrice), col.unitR, yText, { size: 9, align: 'right' })
     drawText(brl(subtotal), col.subR, yText, { size: 9, align: 'right' })
 
