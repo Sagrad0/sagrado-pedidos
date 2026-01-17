@@ -3,18 +3,18 @@
  * 1. Adicionadas constantes SIZES e SPACING para padronização tipográfica e espaçamentos
  * 2. Refinado o header: barra roxa com altura reduzida (48px), título menor e mais profissional
  * 3. Melhorado grid do bloco de informações: padding interno consistente (16px), alinhamento refinado
- * 4. Ajustadas proporções das colunas da tabela para melhor equilíbrio visual
- * 5. Implementado padding real nas células da tabela (8px horizontal) com maxWidth correto
- * 6. Aumentado rowH para 26px e headH para 32px para melhor respiro visual
- * 7. Aplicado truncamento elegante no nome do produto com "…" quando excede espaço
- * 8. Suavizado efeito zebra (bg mais claro) e refinadas bordas da tabela (0.5px)
- * 9. Redesenhado box de totais: header mais discreto, hierarquia clara, separador refinado
- * 10. Melhorado bloco de observações: line-height aumentado (14px), padding interno consistente
- * 11. Refinado footer: linha divisória mais sutil, texto com tamanho e espaçamento profissional
- * 12. Ajustados todos os tamanhos de fonte para hierarquia clara (8-16pt)
- * 13. Consistência de cores: textos com BRAND.text/textMuted, bordas com BRAND.border
- * 14. Melhorado espaçamento vertical entre seções (20-28px) para layout mais respirável
- * 15. Adicionado tratamento de truncamento para SKU também (limite 12 chars)
+ * 4. CORRIGIDO: Larguras das colunas recalculadas para alinhamento perfeito dos headers e células
+ * 5. CORRIGIDO: Implementado padding real e consistente em TODAS as células (header e body)
+ * 6. CORRIGIDO: Headers "Unid.", "Qtde.", "Preço Unit." e "Subtotal" perfeitamente alinhados com suas células
+ * 7. Aumentado rowH para 26px e headH para 32px para melhor respiro visual
+ * 8. Aplicado truncamento elegante no nome do produto e SKU com "…" quando excede espaço
+ * 9. Suavizado efeito zebra (bg mais claro) e refinadas bordas da tabela (0.5px)
+ * 10. Redesenhado box de totais: header mais discreto, hierarquia clara, separador refinado
+ * 11. Melhorado bloco de observações: line-height aumentado (14px), padding interno consistente
+ * 12. Refinado footer: linha divisória mais sutil, texto com tamanho e espaçamento profissional
+ * 13. Ajustados todos os tamanhos de fonte para hierarquia clara (8-16pt)
+ * 14. Consistência de cores: textos com BRAND.text/textMuted, bordas com BRAND.border
+ * 15. Melhorado espaçamento vertical entre seções (20-28px) para layout mais respirável
  */
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
@@ -264,30 +264,43 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   y -= blockH + SPACING.sectionGap
 
-  // ===== TABLE =====
+  // ===== TABLE COM ALINHAMENTO PERFEITO =====
   drawSectionTitle('ITENS DO PEDIDO', M + 4, y + 12)
   y -= 20
 
-  // COLUNAS COM LARGURAS REFINADAS E PADDING REAL
+  // LARGURAS DAS COLUNAS - Calculadas para alinhamento perfeito
+  const PAD = SPACING.paddingTable
   const colWidth = {
-    idx: 32,
-    sku: 75,
-    prod: 215,
-    und: 48,
-    qtd: 52,
-    unit: 72,
-    sub: 72,
+    idx: 36,      // # (pequeno, centralizado)
+    sku: 80,      // Código
+    prod: 210,    // Produto (maior espaço)
+    und: 50,      // Unid.
+    qtd: 55,      // Qtde.
+    unit: 80,     // Preço Unit.
+    sub: 80,      // Subtotal
   }
 
-  const tableStartX = M + 8
-  const col = {
+  // POSIÇÕES ABSOLUTAS DAS COLUNAS
+  const tableStartX = M
+  const colPos = {
     idx: tableStartX,
     sku: tableStartX + colWidth.idx,
     prod: tableStartX + colWidth.idx + colWidth.sku,
     und: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod,
-    qtdR: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und,
-    unitR: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und + colWidth.qtd,
-    subR: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und + colWidth.qtd + colWidth.unit,
+    qtd: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und,
+    unit: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und + colWidth.qtd,
+    sub: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und + colWidth.qtd + colWidth.unit,
+  }
+
+  // POSIÇÕES DE TEXTO (com padding interno)
+  const textPos = {
+    idx: colPos.idx + PAD,
+    sku: colPos.sku + PAD,
+    prod: colPos.prod + PAD,
+    und: colPos.und + PAD,
+    qtdR: colPos.qtd + colWidth.qtd - PAD,      // Alinhado à direita
+    unitR: colPos.unit + colWidth.unit - PAD,   // Alinhado à direita
+    subR: colPos.sub + colWidth.sub - PAD,      // Alinhado à direita
   }
 
   const rowH = 26
@@ -297,13 +310,13 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     drawBox(M, y, W, headH, BRAND.bgLight)
 
     const ty = y - 20
-    drawText('#', col.idx + SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader })
-    drawText('Código', col.sku + SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader })
-    drawText('Produto', col.prod + SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader })
-    drawText('Unid.', col.und + SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader })
-    drawText('Qtde.', col.qtdR - SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
-    drawText('Preço Unit.', col.unitR - SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
-    drawText('Subtotal', col.subR - SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
+    drawText('#', textPos.idx, ty, { bold: true, size: SIZES.tableHeader })
+    drawText('Código', textPos.sku, ty, { bold: true, size: SIZES.tableHeader })
+    drawText('Produto', textPos.prod, ty, { bold: true, size: SIZES.tableHeader })
+    drawText('Unid.', textPos.und, ty, { bold: true, size: SIZES.tableHeader })
+    drawText('Qtde.', textPos.qtdR, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
+    drawText('Preço Unit.', textPos.unitR, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
+    drawText('Subtotal', textPos.subR, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
 
     y -= headH
   }
@@ -333,18 +346,20 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     const unitPrice = Number(it?.unitPrice ?? 0)
     const subtotal = n2(qty * unitPrice)
 
-    // Truncamento elegante para SKU e Produto
-    const skuTruncated = sku.length > 12 ? sku.substring(0, 12) + '…' : sku
-    const prodMaxWidth = colWidth.prod - SPACING.paddingTable * 2
+    // Truncamento elegante com maxWidth específico por coluna
+    const skuMaxWidth = colWidth.sku - PAD * 2
+    const skuTruncated = truncateText(font, sku || '—', SIZES.tableBody, skuMaxWidth)
+    
+    const prodMaxWidth = colWidth.prod - PAD * 2
     const nameTruncated = truncateText(font, name || '—', SIZES.tableBody, prodMaxWidth)
 
-    drawText(String(idx + 1), col.idx + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(skuTruncated || '—', col.sku + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(nameTruncated, col.prod + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(unit || '—', col.und + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(String(qty || 0), col.qtdR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
-    drawText(brl(unitPrice), col.unitR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
-    drawText(brl(subtotal), col.subR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
+    drawText(String(idx + 1), textPos.idx, yText, { size: SIZES.tableBody })
+    drawText(skuTruncated, textPos.sku, yText, { size: SIZES.tableBody })
+    drawText(nameTruncated, textPos.prod, yText, { size: SIZES.tableBody })
+    drawText(unit || '—', textPos.und, yText, { size: SIZES.tableBody })
+    drawText(String(qty || 0), textPos.qtdR, yText, { size: SIZES.tableBody, align: 'right' })
+    drawText(brl(unitPrice), textPos.unitR, yText, { size: SIZES.tableBody, align: 'right' })
+    drawText(brl(subtotal), textPos.subR, yText, { size: SIZES.tableBody, align: 'right' })
 
     y -= rowH
   })
