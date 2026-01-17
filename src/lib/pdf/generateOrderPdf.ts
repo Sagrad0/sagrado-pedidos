@@ -14,7 +14,8 @@
  * 12. Ajustados todos os tamanhos de fonte para hierarquia clara (8-16pt)
  * 13. Consistência de cores: textos com BRAND.text/textMuted, bordas com BRAND.border
  * 14. Melhorado espaçamento vertical entre seções (20-28px) para layout mais respirável
- * 15. Adicionado tratamento de truncamento para SKU também (limite 12 chars)
+ * 15. Corrigido sobreposição entre colunas "Unid." e "Qtde." com ajuste de larguras e truncamento
+ * 16. Adicionado truncamento para unidade (max 8 chars) e quantidade alinhada corretamente
  */
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
@@ -272,15 +273,15 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   drawSectionTitle('ITENS DO PEDIDO', M + 4, y + 12)
   y -= 20
 
-  // COLUNAS COM LARGURAS REFINADAS E PADDING REAL
+  // COLUNAS COM LARGURAS REAJUSTADAS PARA EVITAR SOBREPOSIÇÃO
   const colWidth = {
-    idx: 32,
-    sku: 75,
-    prod: 215,
-    und: 48,
-    qtd: 52,
-    unit: 72,
-    sub: 72,
+    idx: 30,    // reduzido de 32
+    sku: 70,    // reduzido de 75
+    prod: 180,  // reduzido de 215
+    und: 52,    // ajustado de 48
+    qtd: 56,    // aumentado de 52
+    unit: 70,   // ajustado de 72
+    sub: 70,    // ajustado de 72
   }
 
   const tableStartX = M + 8
@@ -338,14 +339,17 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     const subtotal = n2(qty * unitPrice)
 
     // Truncamento elegante para SKU e Produto
-    const skuTruncated = sku.length > 12 ? sku.substring(0, 12) + '…' : sku
+    const skuTruncated = sku.length > 10 ? sku.substring(0, 10) + '…' : sku
     const prodMaxWidth = colWidth.prod - SPACING.paddingTable * 2
     const nameTruncated = truncateText(font, name || '—', SIZES.tableBody, prodMaxWidth)
+
+    // Truncamento para unidade (max 8 caracteres)
+    const unitTruncated = unit.length > 8 ? unit.substring(0, 8) + '…' : unit
 
     drawText(String(idx + 1), col.idx + SPACING.paddingTable, yText, { size: SIZES.tableBody })
     drawText(skuTruncated || '—', col.sku + SPACING.paddingTable, yText, { size: SIZES.tableBody })
     drawText(nameTruncated, col.prod + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(unit || '—', col.und + SPACING.paddingTable, yText, { size: SIZES.tableBody })
+    drawText(unitTruncated || '—', col.und + SPACING.paddingTable, yText, { size: SIZES.tableBody })
     drawText(String(qty || 0), col.qtdR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
     drawText(brl(unitPrice), col.unitR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
     drawText(brl(subtotal), col.subR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
