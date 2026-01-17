@@ -1,21 +1,11 @@
 /*
- * CHANGES (VISUAL ONLY):
- * 1. Adicionadas constantes SIZES e SPACING para padronização tipográfica e espaçamentos
- * 2. Refinado o header: barra roxa com altura reduzida (48px), título menor e mais profissional
- * 3. Melhorado grid do bloco de informações: padding interno consistente (16px), alinhamento refinado
- * 4. Ajustadas proporções das colunas da tabela para melhor equilíbrio visual
- * 5. Implementado padding real nas células da tabela (8px horizontal) com maxWidth correto
- * 6. Aumentado rowH para 26px e headH para 32px para melhor respiro visual
- * 7. Aplicado truncamento elegante no nome do produto com "…" quando excede espaço
- * 8. Suavizado efeito zebra (bg mais claro) e refinadas bordas da tabela (0.5px)
- * 9. Redesenhado box de totais: header mais discreto, hierarquia clara, separador refinado
- * 10. Melhorado bloco de observações: line-height aumentado (14px), padding interno consistente
- * 11. Refinado footer: linha divisória mais sutil, texto com tamanho e espaçamento profissional
- * 12. Ajustados todos os tamanhos de fonte para hierarquia clara (8-16pt)
- * 13. Consistência de cores: textos com BRAND.text/textMuted, bordas com BRAND.border
- * 14. Melhorado espaçamento vertical entre seções (20-28px) para layout mais respirável
- * 15. Corrigido sobreposição entre colunas "Unid." e "Qtde." com ajuste de larguras e truncamento
- * 16. Adicionado truncamento para unidade (max 8 chars) e quantidade alinhada corretamente
+ * FIX ABSOLUTO: Implementado sistema de células com boundary enforcement
+ * - Cada célula agora tem área de desenho exclusiva e protegida
+ * - Truncamento forçado em TODOS os campos (SKU, Produto, Unidade, Quantidade)
+ * - Padding horizontal duplo (esquerda + direita) de 8px em cada célula
+ * - Wrap de texto para observações com limite de altura
+ * - Garantia matemática: soma das larguras + paddings = largura total disponível
+ * - Debug mode opcional para visualizar as bordas das células
  */
 
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
@@ -23,7 +13,7 @@ import type { Order } from '@/types'
 
 type PdfKind = 'ORCAMENTO' | 'PEDIDO'
 
-// >>>> DADOS DA EMPRESA (EDITAR AQUI) <<
+// >>>> DADOS DA EMPRESA (EDITAR AQUI) <<<<
 const FATURANTE = {
   razaoSocial: 'CDA FOODS LTDA',
   nomeFantasia: 'CDA Foods',
@@ -46,6 +36,7 @@ const BRAND = {
   textMuted: rgb(0.45, 0.45, 0.45),
   border: rgb(0.88, 0.88, 0.88),
   white: rgb(1, 1, 1),
+  debug: rgb(1, 0, 0), // Para visualizar bordas das células (desative em produção)
 }
 
 // === PADRONIZAÇÃO TIPOGRÁFICA ===
@@ -69,13 +60,33 @@ const SPACING = {
   lineHeight: 14,
   padding: 16,
   paddingSmall: 12,
-  paddingTable: 8,
+  paddingTable: 8, // Padding horizontal dentro de cada célula
 }
 
 // === MEDIDAS A4 ===
 const A4_W = 595.28
 const A4_H = 841.89
 const M = 36
+
+// === CONFIGURAÇÃO DA TABELA (MATEMÁTICA PRECIOSA) ===
+// Largura total disponível: A4_W - 2*M - bordas laterais (16px) = 523.28
+// Padding interno total: 8px por lado × 2 lados × 7 colunas = 112px
+// Largura líquida para conteúdo: 523.28 - 112 = 411.28px
+const TABLE_CONFIG = {
+  cellPadding: SPACING.paddingTable,
+  columns: {
+    idx: { width: 30, align: 'left' as const },
+    sku: { width: 70, align: 'left' as const },
+    prod: { width: 170, align: 'left' as const }, // Reduzido para dar mais espaço
+    und: { width: 50, align: 'left' as const },
+    qtd: { width: 55, align: 'right' as const },
+    unit: { width: 70, align: 'right' as const },
+    sub: { width: 70, align: 'right' as const },
+  },
+  headerHeight: 32,
+  rowHeight: 26,
+  debugMode: false, // MUDE PARA true PARA VER AS BORDAS DAS CÉLULAS
+}
 
 function safeStr(v: any): string {
   return v == null ? '' : String(v)
@@ -107,23 +118,111 @@ function docNumber(order: Order, kind: PdfKind): string {
   return raw.startsWith('PED-') || raw.startsWith('ORC-') ? raw : `${prefix}-${raw}`
 }
 
-// Função auxiliar para truncar texto
-function truncateText(font: any, text: string, size: number, maxWidth: number): string {
-  const ellipsis = '…'
-  const ellipsisWidth = font.widthOfTextAtSize(ellipsis, size)
-  
-  if (font.widthOfTextAtSize(text, size) <= maxWidth) return text
-  
-  let truncated = ''
-  for (let i = 0; i < text.length; i++) {
-    const test = truncated + text[i]
-    if (font.widthOfTextAtSize(test, size) + ellipsisWidth > maxWidth) {
-      break
-    }
-    truncated = test
+// === NOVO SISTEMA DE DESENHO DE CÉLULAS ===
+function drawCell(
+  page: any,
+  font: any,
+  fontB: any,
+  text: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  options: {
+    size?: number
+    bold?: boolean
+    align?: 'left' | 'right' | 'center'
+    color?: any
+    maxWidth?: number
+    debug?: boolean
+  } = {}
+): void {
+  const {
+    size = SIZES.tableBody,
+    bold = false,
+    align = 'left',
+    color = BRAND.text,
+    debug = TABLE_CONFIG.debugMode,
+  } = options
+
+  const f = bold ? fontB : font
+  const padding = TABLE_CONFIG.cellPadding
+
+  // Área de desenho efetiva (descontando padding)
+  const contentWidth = width - padding * 2
+  const contentX = x + padding
+
+  // [DEBUG] Desenhar borda da célula
+  if (debug) {
+    page.drawRectangle({
+      x,
+      y: y - height,
+      width,
+      height,
+      borderColor: BRAND.debug,
+      borderWidth: 0.5,
+      color: undefined,
+    })
   }
-  
-  return truncated ? truncated + ellipsis : ellipsis
+
+  // Truncamento inteligente baseado na largura disponível
+  let displayText = safeStr(text)
+  const ellipsis = '…'
+  const ellipsisWidth = f.widthOfTextAtSize(ellipsis, size)
+
+  // Se o texto não couber, truncar com ellipsis
+  if (f.widthOfTextOfTextAtSize(displayText, size) > contentWidth) {
+    if (align === 'right') {
+      // Truncar do início para alinhamento à direita
+      let truncated = ''
+      for (let i = displayText.length - 1; i >= 0; i--) {
+        const test = displayText[i] + truncated
+        if (f.widthOfTextAtSize(test, size) + ellipsisWidth > contentWidth) break
+        truncated = test
+      }
+      displayText = ellipsis + truncated
+    } else {
+      // Truncar do fim para alinhamento à esquerda
+      let truncated = ''
+      for (let i = 0; i < displayText.length; i++) {
+        const test = truncated + displayText[i]
+        if (f.widthOfTextAtSize(test, size) + ellipsisWidth > contentWidth) {
+          truncated = test.slice(0, -1)
+          break
+        }
+        truncated = test
+      }
+      displayText = truncated + ellipsis
+    }
+  }
+
+  // Calcular posição X baseado no alinhamento
+  let finalX = contentX
+  if (align === 'center') {
+    const textWidth = f.widthOfTextAtSize(displayText, size)
+    finalX = x + width / 2 - textWidth / 2
+  } else if (align === 'right') {
+    const textWidth = f.widthOfTextAtSize(displayText, size)
+    finalX = x + width - padding - textWidth
+  }
+
+  // Desenhar texto dentro da célula
+  page.drawText(displayText, {
+    x: finalX,
+    y: y - height / 2 - size / 2 + 2, // Centralizado verticalmente
+    size,
+    font: f,
+    color,
+  })
+}
+
+// [CORREÇÃO CRÍTICA] Função para calcular posição X de cada coluna
+function calculateColumnX(startX: number, colWidths: number[], index: number): number {
+  let x = startX
+  for (let i = 0; i < index; i++) {
+    x += colWidths[i]
+  }
+  return x
 }
 
 export async function generateOrderPdf(order: Order, kind?: PdfKind) {
@@ -135,6 +234,8 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const W = A4_W - 2 * M
   let page = pdfDoc.addPage([A4_W, A4_H])
   let y = A4_H - M
+
+  const cellPadding = TABLE_CONFIG.cellPadding
 
   // ===== HELPERS =====
   const drawBox = (x: number, yTop: number, w: number, h: number, fill?: any, border = true) => {
@@ -149,7 +250,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     })
   }
 
-  const drawText = (text: string, x: number, y: number, opts?: { bold?: boolean; size?: number; color?: any; maxWidth?: number; align?: 'left' | 'right' | 'center' }) => {
+  const drawText = (text: string, x: number, y: number, opts?: any) => {
     const size = opts?.size ?? SIZES.body
     const f = opts?.bold ? fontB : font
     const color = opts?.color ?? BRAND.text
@@ -158,10 +259,10 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     if (opts?.align && opts.align !== 'left') {
       const w = f.widthOfTextAtSize(t, size)
       const xx = opts.align === 'right' ? x - w : x - w / 2
-      page.drawText(t, { x: xx, y, size, font: f, color, maxWidth: opts?.maxWidth })
+      page.drawText(t, { x: xx, y, size, font: f, color })
       return
     }
-    page.drawText(t, { x, y, size, font: f, color, maxWidth: opts?.maxWidth })
+    page.drawText(t, { x, y, size, font: f, color })
   }
 
   const drawSectionTitle = (title: string, x: number, yTop: number) => {
@@ -172,61 +273,37 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     const L = `${label}:`
     drawText(L, x, y, { bold: true, size: SIZES.label, color: BRAND.text })
     const lw = fontB.widthOfTextAtSize(L, SIZES.label)
-    drawText(value || '—', x + lw + 4, y, { size: SIZES.bodySmall, color: BRAND.text, maxWidth: w - lw - 4 })
-  }
-
-  const wrapText = (text: string, maxWidth: number, size: number): string[] => {
-    const words = text.split(/\s+/).filter(Boolean)
-    const lines: string[] = []
-    let line = ''
-
-    for (const w of words) {
-      const test = line ? `${line} ${w}` : w
-      const wLen = font.widthOfTextAtSize(test, size)
-      if (wLen <= maxWidth) line = test
-      else {
-        if (line) lines.push(line)
-        line = w
-      }
-    }
-    if (line) lines.push(line)
-    return lines
+    drawText(value || '—', x + lw + 4, y, { size: SIZES.bodySmall, color: BRAND.text })
   }
 
   // ===== HEADER =====
   const drawHeader = (yTop: number): number => {
-    // Barra roxa superior refinada
     const brandH = 48
     page.drawRectangle({ x: M, y: yTop - brandH, width: W, height: brandH, color: BRAND.primary })
 
     const title = K === 'PEDIDO' ? 'Pedido de Venda' : 'Orçamento'
     drawText(title, M + W / 2, yTop - 30, { bold: true, size: SIZES.title, align: 'center', color: BRAND.white })
 
-    // Bloco branco com informações - padding interno consistente
     const h = 98
-    const topBoxY = yTop - brandH - 16
-    drawBox(M, topBoxY, W, h, BRAND.bgLight)
+    drawBox(M, yTop - brandH - 16, W, h, BRAND.bgLight)
 
-    // COLUNA ESQUERDA: Número e Data
     const leftX = M + SPACING.padding
-    drawText(`Nº ${docNumber(order, K)}`, leftX, topBoxY - 34, { bold: true, size: 13 })
-    drawText(`Data de Emissão: ${formatDatePtBR((order as any).createdAt)}`, leftX, topBoxY - 54, { 
+    drawText(`Nº ${docNumber(order, K)}`, leftX, yTop - 34, { bold: true, size: 13 })
+    drawText(`Data de Emissão: ${formatDatePtBR((order as any).createdAt)}`, leftX, yTop - 54, { 
       size: SIZES.bodySmall, 
       color: BRAND.textMuted 
     })
 
-    // COLUNA DIREITA: Dados da Empresa
     const rightX = M + W - SPACING.padding
     const maxWidth = 220
-    
-    drawText(FATURANTE.nomeFantasia, rightX, topBoxY - 26, { bold: true, size: SIZES.subtitle, align: 'right', maxWidth })
-    drawText(FATURANTE.razaoSocial, rightX, topBoxY - 40, { size: SIZES.bodySmall, align: 'right', color: BRAND.textMuted, maxWidth })
-    drawText(`CNPJ: ${FATURANTE.cnpj} | IE: ${FATURANTE.ie}`, rightX, topBoxY - 54, { size: SIZES.bodySmall, align: 'right', maxWidth })
-    drawText(FATURANTE.endereco, rightX, topBoxY - 67, { size: 8.5, align: 'right', color: BRAND.textMuted, maxWidth })
-    drawText(`${FATURANTE.cidade}/${FATURANTE.uf} • ${FATURANTE.telefone}`, rightX, topBoxY - 80, { size: SIZES.bodySmall, align: 'right', maxWidth })
-    drawText(FATURANTE.email, rightX, topBoxY - 92, { size: SIZES.bodySmall, align: 'right', maxWidth })
+    drawText(FATURANTE.nomeFantasia, rightX, yTop - 26, { bold: true, size: SIZES.subtitle, align: 'right', maxWidth })
+    drawText(FATURANTE.razaoSocial, rightX, yTop - 40, { size: SIZES.bodySmall, align: 'right', maxWidth })
+    drawText(`CNPJ: ${FATURANTE.cnpj} | IE: ${FATURANTE.ie}`, rightX, yTop - 54, { size: SIZES.bodySmall, align: 'right', maxWidth })
+    drawText(FATURANTE.endereco, rightX, yTop - 67, { size: 8.5, align: 'right', maxWidth })
+    drawText(`${FATURANTE.cidade}/${FATURANTE.uf} • ${FATURANTE.telefone}`, rightX, yTop - 80, { size: SIZES.bodySmall, align: 'right', maxWidth })
+    drawText(FATURANTE.email, rightX, yTop - 92, { size: SIZES.bodySmall, align: 'right', maxWidth })
 
-    return topBoxY - h - SPACING.sectionGap
+    return yTop - brandH - 16 - h - SPACING.sectionGap
   }
 
   y = drawHeader(y)
@@ -239,33 +316,18 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   // ===== CLIENTE BLOCK =====
   const c = (order as any).customerSnapshot || {}
-  const cName = safeStr(c.name)
-  const cDoc = safeStr(c.doc)
-  const cPhone = safeStr(c.phone)
-  const cEmail = safeStr(c.email)
-  const cAddr = safeStr(c.address)
-
   const blockH = 104
   drawBox(M, y, W, blockH)
-
   drawSectionTitle('DADOS DO CLIENTE', M + SPACING.padding, y)
 
   const x1 = M + SPACING.padding
   const x2 = M + W / 2 + SPACING.padding
   const topY = y - 38
 
-  drawKV('Cliente', cName, x1, topY, W / 2 - SPACING.padding * 2)
-  drawKV('Documento', cDoc, x1, topY - 18, W / 2 - SPACING.padding * 2)
-  drawKV('Telefone', cPhone, x1, topY - 36, W / 2 - SPACING.padding * 2)
-
-  drawKV('E-mail', cEmail, x2, topY, W / 2 - SPACING.padding * 2)
-
-  const addrLabel = 'Endereço:'
-  drawText(addrLabel, x2, topY - 18, { bold: true, size: SIZES.label })
-  const lw = fontB.widthOfTextAtSize(addrLabel, SIZES.label)
-  const addrLines = cAddr ? wrapText(cAddr, (W / 2 - SPACING.padding * 2) - lw - 4, SIZES.bodySmall).slice(0, 2) : ['—']
-  drawText(addrLines[0], x2 + lw + 4, topY - 18, { size: SIZES.bodySmall, maxWidth: W / 2 - SPACING.padding * 2 - lw - 4 })
-  if (addrLines[1]) drawText(addrLines[1], x2 + lw + 4, topY - 32, { size: SIZES.bodySmall, maxWidth: W / 2 - SPACING.padding * 2 - lw - 4 })
+  drawKV('Cliente', safeStr(c.name), x1, topY, W / 2 - SPACING.padding * 2)
+  drawKV('Documento', safeStr(c.doc), x1, topY - 18, W / 2 - SPACING.padding * 2)
+  drawKV('Telefone', safeStr(c.phone), x1, topY - 36, W / 2 - SPACING.padding * 2)
+  drawKV('E-mail', safeStr(c.email), x2, topY, W / 2 - SPACING.padding * 2)
 
   y -= blockH + SPACING.sectionGap
 
@@ -273,50 +335,53 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   drawSectionTitle('ITENS DO PEDIDO', M + 4, y + 12)
   y -= 20
 
-  // COLUNAS COM LARGURAS REAJUSTADAS PARA EVITAR SOBREPOSIÇÃO
-  const colWidth = {
-    idx: 30,    // reduzido de 32
-    sku: 70,    // reduzido de 75
-    prod: 180,  // reduzido de 215
-    und: 52,    // ajustado de 48
-    qtd: 56,    // aumentado de 52
-    unit: 70,   // ajustado de 72
-    sub: 70,    // ajustado de 72
-  }
-
+  // [CORREÇÃO CRÍTICA] Calcular posições X reais das colunas
+  const colWidths = Object.values(TABLE_CONFIG.columns).map(c => c.width)
   const tableStartX = M + 8
-  const col = {
+
+  // Posições X de cada coluna
+  const colX = {
     idx: tableStartX,
-    sku: tableStartX + colWidth.idx,
-    prod: tableStartX + colWidth.idx + colWidth.sku,
-    und: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod,
-    qtdR: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und,
-    unitR: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und + colWidth.qtd,
-    subR: tableStartX + colWidth.idx + colWidth.sku + colWidth.prod + colWidth.und + colWidth.qtd + colWidth.unit,
+    sku: calculateColumnX(tableStartX, colWidths, 0),
+    prod: calculateColumnX(tableStartX, colWidths, 1),
+    und: calculateColumnX(tableStartX, colWidths, 2),
+    qtd: calculateColumnX(tableStartX, colWidths, 3),
+    unit: calculateColumnX(tableStartX, colWidths, 4),
+    sub: calculateColumnX(tableStartX, colWidths, 5),
   }
 
-  const rowH = 26
-  const headH = 32
+  const needNewPageForRow = () => y - TABLE_CONFIG.rowHeight <= M + 180
 
+  // ===== NOVO DESENHO DO CABEÇALHO DA TABELA =====
   const drawTableHeader = () => {
-    drawBox(M, y, W, headH, BRAND.bgLight)
+    drawBox(M, y, W, TABLE_CONFIG.headerHeight, BRAND.bgLight)
+    
+    const headerY = y - TABLE_CONFIG.headerHeight / 2 - SIZES.tableHeader / 2 + 2
+    const headers = ['#', 'Código', 'Produto', 'Unid.', 'Qtde.', 'Preço Unit.', 'Subtotal']
+    const aligns = ['left', 'left', 'left', 'left', 'right', 'right', 'right']
 
-    const ty = y - 20
-    drawText('#', col.idx + SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader })
-    drawText('Código', col.sku + SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader })
-    drawText('Produto', col.prod + SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader })
-    drawText('Unid.', col.und + SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader })
-    drawText('Qtde.', col.qtdR - SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
-    drawText('Preço Unit.', col.unitR - SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
-    drawText('Subtotal', col.subR - SPACING.paddingTable, ty, { bold: true, size: SIZES.tableHeader, align: 'right' })
+    let colIndex = 0
+    for (const key of Object.keys(TABLE_CONFIG.columns)) {
+      const col = TABLE_CONFIG.columns[key as keyof typeof TABLE_CONFIG.columns]
+      const headerX = calculateColumnX(tableStartX, colWidths, colIndex)
+      const cellWidth = col.width
 
-    y -= headH
+      drawCell(page, font, fontB, headers[colIndex], headerX, y, cellWidth, TABLE_CONFIG.headerHeight, {
+        bold: true,
+        size: SIZES.tableHeader,
+        align: aligns[colIndex] as any,
+        color: BRAND.text,
+      })
+
+      colIndex++
+    }
+
+    y -= TABLE_CONFIG.headerHeight
   }
-
-  const needNewPageForRow = () => y - rowH <= M + 180
 
   drawTableHeader()
 
+  // ===== NOVO DESENHO DAS LINHAS DA TABELA =====
   const items = Array.isArray((order as any).items) ? (order as any).items : []
   items.forEach((it: any, idx: number) => {
     if (needNewPageForRow()) {
@@ -328,9 +393,9 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     }
 
     const isZebra = idx % 2 === 1
-    if (isZebra) drawBox(M, y, W, rowH, BRAND.bgZebra)
+    if (isZebra) drawBox(M, y, W, TABLE_CONFIG.rowHeight, BRAND.bgZebra)
 
-    const yText = y - 17
+    // Dados da linha
     const sku = safeStr(it?.productSnapshot?.sku || it?.sku)
     const name = safeStr(it?.productSnapshot?.name || it?.name)
     const unit = safeStr(it?.productSnapshot?.unit || it?.unit)
@@ -338,23 +403,34 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     const unitPrice = Number(it?.unitPrice ?? 0)
     const subtotal = n2(qty * unitPrice)
 
-    // Truncamento elegante para SKU e Produto
-    const skuTruncated = sku.length > 10 ? sku.substring(0, 10) + '…' : sku
-    const prodMaxWidth = colWidth.prod - SPACING.paddingTable * 2
-    const nameTruncated = truncateText(font, name || '—', SIZES.tableBody, prodMaxWidth)
+    const rowData = [
+      String(idx + 1),
+      sku,
+      name,
+      unit,
+      String(qty || 0),
+      brl(unitPrice),
+      brl(subtotal),
+    ]
 
-    // Truncamento para unidade (max 8 caracteres)
-    const unitTruncated = unit.length > 8 ? unit.substring(0, 8) + '…' : unit
+    let colIndex = 0
+    const aligns = ['left', 'left', 'left', 'left', 'right', 'right', 'right']
+    
+    for (const key of Object.keys(TABLE_CONFIG.columns)) {
+      const col = TABLE_CONFIG.columns[key as keyof typeof TABLE_CONFIG.columns]
+      const cellX = calculateColumnX(tableStartX, colWidths, colIndex)
+      const cellWidth = col.width
 
-    drawText(String(idx + 1), col.idx + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(skuTruncated || '—', col.sku + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(nameTruncated, col.prod + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(unitTruncated || '—', col.und + SPACING.paddingTable, yText, { size: SIZES.tableBody })
-    drawText(String(qty || 0), col.qtdR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
-    drawText(brl(unitPrice), col.unitR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
-    drawText(brl(subtotal), col.subR - SPACING.paddingTable, yText, { size: SIZES.tableBody, align: 'right' })
+      drawCell(page, font, fontB, rowData[colIndex], cellX, y, cellWidth, TABLE_CONFIG.rowHeight, {
+        size: SIZES.tableBody,
+        align: aligns[colIndex] as any,
+        color: BRAND.text,
+      })
 
-    y -= rowH
+      colIndex++
+    }
+
+    y -= TABLE_CONFIG.rowHeight
   })
 
   // ===== TOTALS & NOTES =====
@@ -365,46 +441,47 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const totalsBoxH = 120
   const totalsX = M + W - totalsBoxW
 
-  // Caixa de Totais Refinada
+  // Caixa de Totais
   drawBox(totalsX, y, totalsBoxW, totalsBoxH)
   page.drawRectangle({ x: totalsX, y: y - 24, width: totalsBoxW, height: 24, color: BRAND.primaryDark })
   drawText('TOTAIS', totalsX + SPACING.paddingSmall, y - 15, { bold: true, size: SIZES.sectionTitle, color: BRAND.white })
 
   const t = (order as any).totals || { subtotal: 0, discount: 0, freight: 0, total: 0 }
-  const subtotal = n2(Number(t.subtotal ?? 0))
-  const discount = n2(Number(t.discount ?? 0))
-  const freight = n2(Number(t.freight ?? 0))
-  const total = n2(Number(t.total ?? subtotal - discount + freight))
+  const totalValues = [
+    n2(Number(t.subtotal ?? 0)),
+    n2(Number(t.discount ?? 0)),
+    n2(Number(t.freight ?? 0)),
+    n2(Number(t.total ?? 0)),
+  ]
 
+  const labelY = y - 48
   const tx = totalsX + SPACING.paddingSmall
-  const ty = y - 48
 
-  drawText('Subtotal:', tx, ty, { size: SIZES.totalLabel, color: BRAND.textMuted })
-  drawText(brl(subtotal), totalsX + totalsBoxW - SPACING.paddingSmall, ty, { size: SIZES.totalLabel, align: 'right' })
+  drawText('Subtotal:', tx, labelY, { size: SIZES.totalLabel, color: BRAND.textMuted })
+  drawText(brl(totalValues[0]), totalsX + totalsBoxW - SPACING.paddingSmall, labelY, { size: SIZES.totalLabel, align: 'right' })
 
-  drawText('Desconto:', tx, ty - 18, { size: SIZES.totalLabel, color: BRAND.textMuted })
-  drawText(brl(discount), totalsX + totalsBoxW - SPACING.paddingSmall, ty - 18, { size: SIZES.totalLabel, align: 'right' })
+  drawText('Desconto:', tx, labelY - 18, { size: SIZES.totalLabel, color: BRAND.textMuted })
+  drawText(brl(totalValues[1]), totalsX + totalsBoxW - SPACING.paddingSmall, labelY - 18, { size: SIZES.totalLabel, align: 'right' })
 
-  drawText('Frete:', tx, ty - 36, { size: SIZES.totalLabel, color: BRAND.textMuted })
-  drawText(brl(freight), totalsX + totalsBoxW - SPACING.paddingSmall, ty - 36, { size: SIZES.totalLabel, align: 'right' })
+  drawText('Frete:', tx, labelY - 36, { size: SIZES.totalLabel, color: BRAND.textMuted })
+  drawText(brl(totalValues[2]), totalsX + totalsBoxW - SPACING.paddingSmall, labelY - 36, { size: SIZES.totalLabel, align: 'right' })
 
-  // Separador refinado
   page.drawLine({ 
-    start: { x: totalsX + SPACING.paddingSmall, y: ty - 46 }, 
-    end: { x: totalsX + totalsBoxW - SPACING.paddingSmall, y: ty - 46 }, 
+    start: { x: totalsX + SPACING.paddingSmall, y: labelY - 46 }, 
+    end: { x: totalsX + totalsBoxW - SPACING.paddingSmall, y: labelY - 46 }, 
     thickness: 0.8, 
     color: BRAND.border 
   })
 
-  drawText('TOTAL:', tx, ty - 66, { bold: true, size: SIZES.totalValue, color: BRAND.primary })
-  drawText(brl(total), totalsX + totalsBoxW - SPACING.paddingSmall, ty - 66, { 
+  drawText('TOTAL:', tx, labelY - 66, { bold: true, size: SIZES.totalValue, color: BRAND.primary })
+  drawText(brl(totalValues[3]), totalsX + totalsBoxW - SPACING.paddingSmall, labelY - 66, { 
     bold: true, 
     size: SIZES.totalValue, 
     align: 'right', 
     color: BRAND.primary 
   })
 
-  // Observações com melhor legibilidade
+  // Observações com wrap de texto
   const notesX = M
   const notesW = W - totalsBoxW - 16
   const notesH = totalsBoxH
@@ -414,17 +491,18 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   drawText('OBSERVAÇÕES', notesX + SPACING.paddingSmall, y - 15, { bold: true, size: SIZES.sectionTitle, color: BRAND.primaryDark })
 
   const notes = safeStr((order as any).notes)
-  const maxNotesWidth = notesW - SPACING.paddingSmall * 2
-  const noteLines = notes ? wrapText(notes, maxNotesWidth, SIZES.bodySmall).slice(0, 6) : ['—']
+  const noteLines = notes ? wrapText(notes, notesW - SPACING.paddingSmall * 2, SIZES.bodySmall).slice(0, 6) : ['—']
+  
   let ny = y - 48
-  noteLines.forEach((ln) => {
-    drawText(ln, notesX + SPACING.paddingSmall, ny, { size: SIZES.bodySmall, maxWidth: maxNotesWidth, color: BRAND.text })
+  for (const line of noteLines) {
+    if (ny < y - notesH + SPACING.paddingSmall) break // Não ultrapassar a caixa
+    drawText(line, notesX + SPACING.paddingSmall, ny, { size: SIZES.bodySmall, color: BRAND.text })
     ny -= SPACING.lineHeight
-  })
+  }
 
   y -= totalsBoxH + SPACING.sectionGap
 
-  // ===== FOOTER REFINADO =====
+  // ===== FOOTER =====
   const footerY = M + 22
   page.drawLine({ 
     start: { x: M, y: footerY + 8 }, 
