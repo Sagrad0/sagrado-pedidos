@@ -88,6 +88,7 @@ const TABLE_CONFIG = {
   debugMode: false, // MUDE PARA true PARA VER AS BORDAS DAS CÉLULAS
 }
 
+// === FUNÇÕES UTILITÁRIAS ===
 function safeStr(v: any): string {
   return v == null ? '' : String(v)
 }
@@ -118,6 +119,26 @@ function docNumber(order: Order, kind: PdfKind): string {
   return raw.startsWith('PED-') || raw.startsWith('ORC-') ? raw : `${prefix}-${raw}`
 }
 
+// === FUNÇÃO CRÍTICA: WRAP TEXT PARA OBSERVAÇÕES ===
+function wrapText(text: string, maxWidth: number, size: number, font: any): string[] {
+  const words = text.split(/\s+/).filter(Boolean)
+  const lines: string[] = []
+  let line = ''
+
+  for (const w of words) {
+    const test = line ? `${line} ${w}` : w
+    const wLen = font.widthOfTextAtSize(test, size)
+    if (wLen <= maxWidth) {
+      line = test
+    } else {
+      if (line) lines.push(line)
+      line = w
+    }
+  }
+  if (line) lines.push(line)
+  return lines
+}
+
 // === NOVO SISTEMA DE DESENHO DE CÉLULAS ===
 function drawCell(
   page: any,
@@ -133,7 +154,6 @@ function drawCell(
     bold?: boolean
     align?: 'left' | 'right' | 'center'
     color?: any
-    maxWidth?: number
     debug?: boolean
   } = {}
 ): void {
@@ -150,7 +170,6 @@ function drawCell(
 
   // Área de desenho efetiva (descontando padding)
   const contentWidth = width - padding * 2
-  const contentX = x + padding
 
   // [DEBUG] Desenhar borda da célula
   if (debug) {
@@ -171,7 +190,7 @@ function drawCell(
   const ellipsisWidth = f.widthOfTextAtSize(ellipsis, size)
 
   // Se o texto não couber, truncar com ellipsis
-  if (f.widthOfTextOfTextAtSize(displayText, size) > contentWidth) {
+  if (f.widthOfTextAtSize(displayText, size) > contentWidth) {
     if (align === 'right') {
       // Truncar do início para alinhamento à direita
       let truncated = ''
@@ -197,7 +216,7 @@ function drawCell(
   }
 
   // Calcular posição X baseado no alinhamento
-  let finalX = contentX
+  let finalX = x + padding
   if (align === 'center') {
     const textWidth = f.widthOfTextAtSize(displayText, size)
     finalX = x + width / 2 - textWidth / 2
@@ -234,8 +253,6 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const W = A4_W - 2 * M
   let page = pdfDoc.addPage([A4_W, A4_H])
   let y = A4_H - M
-
-  const cellPadding = TABLE_CONFIG.cellPadding
 
   // ===== HELPERS =====
   const drawBox = (x: number, yTop: number, w: number, h: number, fill?: any, border = true) => {
@@ -335,11 +352,9 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   drawSectionTitle('ITENS DO PEDIDO', M + 4, y + 12)
   y -= 20
 
-  // [CORREÇÃO CRÍTICA] Calcular posições X reais das colunas
   const colWidths = Object.values(TABLE_CONFIG.columns).map(c => c.width)
   const tableStartX = M + 8
 
-  // Posições X de cada coluna
   const colX = {
     idx: tableStartX,
     sku: calculateColumnX(tableStartX, colWidths, 0),
@@ -356,7 +371,6 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const drawTableHeader = () => {
     drawBox(M, y, W, TABLE_CONFIG.headerHeight, BRAND.bgLight)
     
-    const headerY = y - TABLE_CONFIG.headerHeight / 2 - SIZES.tableHeader / 2 + 2
     const headers = ['#', 'Código', 'Produto', 'Unid.', 'Qtde.', 'Preço Unit.', 'Subtotal']
     const aligns = ['left', 'left', 'left', 'left', 'right', 'right', 'right']
 
@@ -395,7 +409,6 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     const isZebra = idx % 2 === 1
     if (isZebra) drawBox(M, y, W, TABLE_CONFIG.rowHeight, BRAND.bgZebra)
 
-    // Dados da linha
     const sku = safeStr(it?.productSnapshot?.sku || it?.sku)
     const name = safeStr(it?.productSnapshot?.name || it?.name)
     const unit = safeStr(it?.productSnapshot?.unit || it?.unit)
@@ -441,7 +454,6 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const totalsBoxH = 120
   const totalsX = M + W - totalsBoxW
 
-  // Caixa de Totais
   drawBox(totalsX, y, totalsBoxW, totalsBoxH)
   page.drawRectangle({ x: totalsX, y: y - 24, width: totalsBoxW, height: 24, color: BRAND.primaryDark })
   drawText('TOTAIS', totalsX + SPACING.paddingSmall, y - 15, { bold: true, size: SIZES.sectionTitle, color: BRAND.white })
@@ -481,7 +493,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
     color: BRAND.primary 
   })
 
-  // Observações com wrap de texto
+  // Observações com wrap de texto (USANDO wrapText corretamente)
   const notesX = M
   const notesW = W - totalsBoxW - 16
   const notesH = totalsBoxH
@@ -491,11 +503,12 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   drawText('OBSERVAÇÕES', notesX + SPACING.paddingSmall, y - 15, { bold: true, size: SIZES.sectionTitle, color: BRAND.primaryDark })
 
   const notes = safeStr((order as any).notes)
-  const noteLines = notes ? wrapText(notes, notesW - SPACING.paddingSmall * 2, SIZES.bodySmall).slice(0, 6) : ['—']
+  // [CORREÇÃO] Agora passando o font corretamente para wrapText
+  const noteLines = notes ? wrapText(notes, notesW - SPACING.paddingSmall * 2, SIZES.bodySmall, font).slice(0, 6) : ['—']
   
   let ny = y - 48
   for (const line of noteLines) {
-    if (ny < y - notesH + SPACING.paddingSmall) break // Não ultrapassar a caixa
+    if (ny < y - notesH + SPACING.paddingSmall) break
     drawText(line, notesX + SPACING.paddingSmall, ny, { size: SIZES.bodySmall, color: BRAND.text })
     ny -= SPACING.lineHeight
   }
