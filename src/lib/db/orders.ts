@@ -1,8 +1,8 @@
 import {
   collection,
-  addDoc,
   getDocs,
   getDoc,
+  addDoc,
   doc,
   updateDoc,
   query,
@@ -14,12 +14,23 @@ import type { Order } from '@/types'
 
 const COLLECTION = 'orders'
 
-export async function getOrders() {
+export async function getAllOrders(): Promise<Order[]> {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const q = query(collection(db, COLLECTION), orderBy('createdAt', 'desc'))
+  const snapshot = await getDocs(q)
+
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Order[]
+}
+
+export async function getOrdersByStatus(status: string): Promise<Order[]> {
   await ensureAuthReady()
   const db = getDbInstance()
 
   const q = query(
     collection(db, COLLECTION),
+    where('status', '==', status),
     orderBy('createdAt', 'desc')
   )
 
@@ -27,7 +38,20 @@ export async function getOrders() {
   return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Order[]
 }
 
-export async function getOrderById(id: string) {
+export async function searchOrders(term: string): Promise<Order[]> {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const q = query(
+    collection(db, COLLECTION),
+    where('search', 'array-contains', term.toLowerCase())
+  )
+
+  const snapshot = await getDocs(q)
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Order[]
+}
+
+export async function getOrder(id: string): Promise<Order | null> {
   await ensureAuthReady()
   const db = getDbInstance()
 
@@ -54,6 +78,26 @@ export async function updateOrder(id: string, data: Partial<Order>) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  const ref = doc(db, COLLECTION, id)
-  await updateDoc(ref, data)
+  await updateDoc(doc(db, COLLECTION, id), data)
+}
+
+export async function updateOrderStatus(id: string, status: string) {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  await updateDoc(doc(db, COLLECTION, id), { status })
+}
+
+export async function duplicateOrder(order: Order) {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const { id, ...data } = order
+  const ref = await addDoc(collection(db, COLLECTION), {
+    ...data,
+    status: 'Orçamento',
+    createdAt: new Date(),
+  })
+
+  return ref.id
 }
