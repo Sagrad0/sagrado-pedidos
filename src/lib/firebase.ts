@@ -51,7 +51,11 @@ export async function ensureAnonAuth() {
     })
   })
 
-  if (!auth.currentUser) {
+  // ⚠️ Segurança: Anônimo só quando explicitamente permitido.
+  // Em produção, deixe NEXT_PUBLIC_ENABLE_ANON_AUTH=false (ou vazio).
+  const allowAnon = String(process.env.NEXT_PUBLIC_ENABLE_ANON_AUTH || '').toLowerCase() === 'true'
+
+  if (!auth.currentUser && allowAnon) {
     await signInAnonymously(auth)
   }
 
