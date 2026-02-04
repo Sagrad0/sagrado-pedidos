@@ -5,6 +5,7 @@ import {
   doc,
   updateDoc,
   query,
+  where,
   orderBy,
 } from 'firebase/firestore'
 import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
@@ -19,6 +20,24 @@ export async function getAllProducts(): Promise<Product[]> {
   const q = query(collection(db, COLLECTION), orderBy('name', 'asc'))
   const snapshot = await getDocs(q)
 
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Product[]
+}
+
+/**
+ * Compatível com o app:
+ * products/page.tsx importa searchProducts(term)
+ * O projeto usa um campo "search" (array) igual customers/orders.
+ */
+export async function searchProducts(term: string): Promise<Product[]> {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const q = query(
+    collection(db, COLLECTION),
+    where('search', 'array-contains', term.toLowerCase())
+  )
+
+  const snapshot = await getDocs(q)
   return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Product[]
 }
 
