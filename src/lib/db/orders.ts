@@ -88,11 +88,26 @@ export async function updateOrderStatus(id: string, status: string) {
   await updateDoc(doc(db, COLLECTION, id), { status })
 }
 
-export async function duplicateOrder(order: Order) {
+/**
+ * Mantém compatibilidade com o app:
+ * - Em alguns lugares ele chama duplicateOrder(order.id) (string)
+ * - Em outros pode chamar duplicateOrder(order) (Order)
+ */
+export async function duplicateOrder(orderOrId: Order | string) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  const { id, ...data } = order
+  let orderData: Order | null
+
+  if (typeof orderOrId === 'string') {
+    orderData = await getOrder(orderOrId)
+    if (!orderData) throw new Error('Pedido não encontrado para duplicar.')
+  } else {
+    orderData = orderOrId
+  }
+
+  const { id, ...data } = orderData
+
   const ref = await addDoc(collection(db, COLLECTION), {
     ...data,
     status: 'Orçamento',
