@@ -1,7 +1,9 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
+import { getFirebaseApp } from '@/lib/firebase'
+import { getAuth, signOut } from 'firebase/auth'
 
 const NavLink = ({ href, label }: { href: string; label: string }) => {
   const pathname = usePathname()
@@ -42,6 +44,19 @@ const MobileNavLink = ({ href, label }: { href: string; label: string }) => {
 }
 
 export const Navbar: React.FC = () => {
+  const pathname = usePathname()
+  const router = useRouter()
+
+  // Não mostrar nav no login
+  if (pathname === '/login') return null
+
+  async function handleLogout() {
+    const app = getFirebaseApp()
+    const auth = getAuth(app)
+    await signOut(auth)
+    router.replace('/login')
+  }
+
   return (
     <nav className="bg-white shadow-sm border-b sticky top-0 z-40">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -52,20 +67,33 @@ export const Navbar: React.FC = () => {
             <NavLink href="/customers" label="Clientes" />
             <NavLink href="/products" label="Produtos" />
           </div>
+
           <div className="md:hidden">
             <span className="text-gray-800 font-semibold">Sagrado Pedidos</span>
           </div>
+
           <div className="hidden md:block">
-            {/* espaço para futuras ações no desktop */}
+            <button
+              onClick={handleLogout}
+              className="text-sm font-semibold text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md hover:bg-gray-50"
+            >
+              Sair
+            </button>
           </div>
         </div>
 
         {/* Mobile nav (tabs) */}
         <div className="md:hidden pb-3">
-          <div className="flex gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex gap-2 overflow-x-auto no-scrollbar items-center">
             <MobileNavLink href="/orders" label="Pedidos" />
             <MobileNavLink href="/customers" label="Clientes" />
             <MobileNavLink href="/products" label="Produtos" />
+            <button
+              onClick={handleLogout}
+              className="bg-gray-100 text-gray-700 hover:bg-gray-200 px-4 py-2 rounded-full text-sm font-semibold whitespace-nowrap"
+            >
+              Sair
+            </button>
           </div>
         </div>
       </div>
