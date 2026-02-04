@@ -1,104 +1,42 @@
-import { Customer, CustomerFormData } from '@/types'
-import { getDbInstance, ensureAnonAuth, ensureFirestorePersistence } from '@/lib/firebase'
 import {
-  addDoc,
   collection,
-  deleteDoc,
-  doc,
-  getDoc,
   getDocs,
-  orderBy,
+  addDoc,
+  doc,
+  updateDoc,
   query,
-  serverTimestamp,
-  setDoc,
-  type DocumentData,
+  orderBy,
 } from 'firebase/firestore'
+import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
+import type { Customer } from '@/types'
 
-const COL = 'customers'
+const COLLECTION = 'customers'
 
-function fromFirestore(id: string, data: DocumentData): Customer {
-  const createdAt = data.createdAt?.toMillis ? data.createdAt.toMillis() : (data.createdAt ?? Date.now())
-  const updatedAt = data.updatedAt?.toMillis ? data.updatedAt.toMillis() : (data.updatedAt ?? Date.now())
-  return {
-    id,
-    createdAt,
-    updatedAt,
-    name: data.name ?? '',
-    doc: data.doc ?? undefined,
-    phone: data.phone ?? '',
-    email: data.email ?? undefined,
-    address: data.address ?? undefined,
-  }
+export async function getCustomers() {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const q = query(
+    collection(db, COLLECTION),
+    orderBy('name', 'asc')
+  )
+
+  const snapshot = await getDocs(q)
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Customer[]
 }
 
-export const createCustomer = async (data: CustomerFormData): Promise<string> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
+export async function createCustomer(data: Partial<Customer>) {
+  await ensureAuthReady()
   const db = getDbInstance()
-  const ref = await addDoc(collection(db, COL), {
-    ...data,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  })
+
+  const ref = await addDoc(collection(db, COLLECTION), data)
   return ref.id
 }
 
-export const updateCustomer = async (id: string, data: Partial<CustomerFormData>): Promise<void> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
+export async function updateCustomer(id: string, data: Partial<Customer>) {
+  await ensureAuthReady()
   const db = getDbInstance()
-  const ref = doc(db, COL, id)
-  await setDoc(
-    ref,
-    {
-      ...data,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true }
-  )
-}
 
-export const deleteCustomer = async (id: string): Promise<void> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-  const db = getDbInstance()
-  await deleteDoc(doc(db, COL, id))
-}
-
-export const getCustomer = async (id: string): Promise<Customer | null> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const snap = await getDoc(doc(db, COL, id))
-  if (!snap.exists()) return null
-  return fromFirestore(snap.id, snap.data())
-}
-
-export const getAllCustomers = async (): Promise<Customer[]> => {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
-
-  const db = getDbInstance()
-  const q = query(collection(db, COL), orderBy('name', 'asc'))
-  const snaps = await getDocs(q)
-  return snaps.docs.map((d) => fromFirestore(d.id, d.data()))
-}
-
-export const searchCustomers = async (searchTerm: string): Promise<Customer[]> => {
-  // Simple client-side filter (dataset is small for MVP)
-  const normalizedSearch = searchTerm.toLowerCase().trim()
-  const all = await getAllCustomers()
-
-  if (!normalizedSearch) return all
-
-  return all.filter(
-    (customer) =>
-      customer.name.toLowerCase().includes(normalizedSearch) ||
-      customer.phone.includes(searchTerm) ||
-      (customer.doc && customer.doc.includes(searchTerm)) ||
-      (customer.email && customer.email.toLowerCase().includes(normalizedSearch))
-  )
+  const ref = doc(db, COLLECTION, id)
+  await updateDoc(ref, data)
 }
