@@ -12,38 +12,44 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
 }
 
-function getApp() {
+function _getApp() {
   if (!getApps().length) initializeApp(firebaseConfig)
   return getApps()[0]
+}
+
+// Export opcional (ajuda login/logout sem repetir config)
+export function getFirebaseApp() {
+  return _getApp()
 }
 
 // ---- FIRESTORE INSTANCE (sync, cached) ----
 let _db: Firestore | null = null
 
-/**
- * Returns a cached Firestore instance.
- *
- * Note: This module is client-only ("use client"), so this is safe to call
- * from client components and client-side DB helpers.
- */
 export function getDbInstance(): Firestore {
   if (_db) return _db
-  const app = getApp()
+  const app = _getApp()
   _db = getFirestore(app)
   return _db
 }
 
 // ---- AUTH (lazy import) ----
-export async function ensureAnonAuth() {
-  const { getAuth, signInAnonymously, onAuthStateChanged } = await import('firebase/auth')
+const ENABLE_ANON = (process.env.NEXT_PUBLIC_ENABLE_ANON_AUTH ?? '').toLowerCase() === 'true'
 
-  const app = getApp()
+/**
+ * Garante que o Firebase Auth já resolveu o estado inicial.
+ * - Se ENABLE_ANON=true: entra como anônimo (apenas se não houver user)
+ * - Se ENABLE_ANON=false: NÃO cria sessão anônima (exige login email/senha)
+ */
+export async function ensureAuthReady() {
+  const { getAuth, onAuthStateChanged, signInAnonymously } = await import('firebase/auth')
+
+  const app = _getApp()
   const auth = getAuth(app)
 
-  // já logado?
+  // se já tem user, ok
   if (auth.currentUser) return auth
 
-  // aguarda estado inicial
+  // espera o estado inicial resolver (ponto que evita race condition)
   await new Promise<void>((resolve) => {
     const unsub = onAuthStateChanged(auth, () => {
       unsub()
@@ -51,11 +57,8 @@ export async function ensureAnonAuth() {
     })
   })
 
-  // ⚠️ Segurança: Anônimo só quando explicitamente permitido.
-  // Em produção, deixe NEXT_PUBLIC_ENABLE_ANON_AUTH=false (ou vazio).
-  const allowAnon = String(process.env.NEXT_PUBLIC_ENABLE_ANON_AUTH || '').toLowerCase() === 'true'
-
-  if (!auth.currentUser && allowAnon) {
+  // se ainda não tem user e anon está habilitado, entra anônimo
+  if (!auth.currentUser && ENABLE_ANON) {
     await signInAnonymously(auth)
   }
 
@@ -66,7 +69,7 @@ export async function ensureAnonAuth() {
 export async function ensureFirestorePersistence() {
   const { getFirestore, enableIndexedDbPersistence } = await import('firebase/firestore')
 
-  const app = getApp()
+  const app = _getApp()
   const db = getFirestore(app)
 
   try {
