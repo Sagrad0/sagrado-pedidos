@@ -1,10 +1,46 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // MVP interno: sem tela de login. O app usa Auth Anônimo.
-    // Regra mínima: só permite acesso quando autenticado (anônimo ou não).
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function notAnonymous() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    // 👇 Lista branca de usuários internos (e-mail)
+    function isAllowedEmail() {
+      return notAnonymous() && request.auth.token.email in ['vendas1@sagrado.local', 'vendas2@sagrado.local', 'vendas3@sagrado.local'];
+    }
+
+    // ---- Regras por coleção (escopo mínimo do app) ----
+
+    match /products/{id} {
+      allow read: if isAllowedEmail();
+      allow create, update, delete: if isAllowedEmail();
+    }
+
+    match /customers/{id} {
+      allow read: if isAllowedEmail();
+      allow create, update, delete: if isAllowedEmail();
+    }
+
+    match /orders/{id} {
+      allow read: if isAllowedEmail();
+      allow create, update, delete: if isAllowedEmail();
+    }
+
+    match /counters/{id} {
+      allow read: if isAllowedEmail();
+      allow create, update: if isAllowedEmail();
+      allow delete: if false;
+    }
+
+    // Bloqueia todo o resto por padrão
     match /{document=**} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false;
     }
   }
 }
