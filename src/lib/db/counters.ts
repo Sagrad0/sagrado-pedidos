@@ -1,34 +1,36 @@
-import { getDbInstance, ensureAnonAuth, ensureFirestorePersistence } from '@/lib/firebase'
-import { doc, runTransaction, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore'
+import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
 
-/**
- * Gera um número incremental de pedido no Firestore.
- * Salva em: counters/orders -> { value: number }
- * Retorna formato: PED-000001
- */
-export async function generateOrderId(): Promise<string> {
-  await ensureFirestorePersistence()
-  await ensureAnonAuth()
+const COLLECTION = 'counters'
 
+export async function getCounter(id: string) {
+  await ensureAuthReady()
   const db = getDbInstance()
-  const ref = doc(db, 'counters', 'orders')
 
-  const nextNumber = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(ref)
-    const current = snap.exists() ? Number((snap.data() as any)?.value ?? 0) : 0
-    const next = current + 1
+  const ref = doc(db, COLLECTION, id)
+  const snap = await getDoc(ref)
 
-    tx.set(
-      ref,
-      {
-        value: next,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    )
+  if (!snap.exists()) return null
+  return snap.data()
+}
 
-    return next
-  })
+export async function setCounter(id: string, value: number) {
+  await ensureAuthReady()
+  const db = getDbInstance()
 
-  return `PED-${String(nextNumber).padStart(6, '0')}`
+  const ref = doc(db, COLLECTION, id)
+  await setDoc(ref, { value })
+}
+
+export async function incrementCounter(id: string) {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const ref = doc(db, COLLECTION, id)
+  const snap = await getDoc(ref)
+
+  const current = snap.exists() ? snap.data().value : 0
+  await updateDoc(ref, { value: current + 1 })
+
+  return current + 1
 }
