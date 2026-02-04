@@ -10,9 +10,24 @@ import {
   orderBy,
 } from 'firebase/firestore'
 import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
-import type { Order } from '@/types'
+import type { Order, OrderItem, OrderFormData } from '@/types'
 
 const COLLECTION = 'orders'
+
+function normalizeItems(items: any[]): OrderItem[] {
+  return (items || []).map((it) => {
+    const qty = Number(it.quantity ?? 0)
+    const price = Number(it.price ?? 0)
+    const total = typeof it.total === 'number' ? it.total : qty * price
+
+    return {
+      ...it,
+      quantity: qty,
+      price,
+      total,
+    } as OrderItem
+  })
+}
 
 export async function getAllOrders(): Promise<Order[]> {
   await ensureAuthReady()
@@ -21,7 +36,7 @@ export async function getAllOrders(): Promise<Order[]> {
   const q = query(collection(db, COLLECTION), orderBy('createdAt', 'desc'))
   const snapshot = await getDocs(q)
 
-  return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Order[]
+  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
 }
 
 export async function getOrdersByStatus(status: string): Promise<Order[]> {
@@ -35,7 +50,7 @@ export async function getOrdersByStatus(status: string): Promise<Order[]> {
   )
 
   const snapshot = await getDocs(q)
-  return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Order[]
+  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
 }
 
 export async function searchOrders(term: string): Promise<Order[]> {
@@ -48,7 +63,7 @@ export async function searchOrders(term: string): Promise<Order[]> {
   )
 
   const snapshot = await getDocs(q)
-  return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Order[]
+  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
 }
 
 export async function getOrder(id: string): Promise<Order | null> {
@@ -62,12 +77,27 @@ export async function getOrder(id: string): Promise<Order | null> {
   return { id: snap.id, ...snap.data() } as Order
 }
 
-export async function createOrder(data: Partial<Order>) {
+/**
+ * Compatível com o app:
+ * - orders/new chama createOrder(payload) onde payload é OrderFormData (items sem total)
+ * - Aqui normalizamos e calculamos total por item ao salvar
+ */
+export async function createOrder(data: Partial<Order> | OrderFormData) {
   await ensureAuthReady()
   const db = getDbInstance()
 
+  const payload: any = { ...data }
+
+  // garante items com total
+  payload.items = normalizeItems(payload.items || [])
+
+  // se existir um total geral e ele não vier calculado, tente calcular
+  if (payload.items?.length && (payload.total == null || Number.isNaN(Number(payload.total)))) {
+    payload.total = payload.items.reduce((acc: number, it: OrderItem) => acc + Number(it.total ?? 0), 0)
+  }
+
   const ref = await addDoc(collection(db, COLLECTION), {
-    ...data,
+    ...payload,
     createdAt: new Date(),
   })
 
@@ -78,7 +108,14 @@ export async function updateOrder(id: string, data: Partial<Order>) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  await updateDoc(doc(db, COLLECTION, id), data)
+  const payload: any = { ...data }
+
+  // se update vier com items, normaliza também (mantém coerência)
+  if (payload.items) {
+    payload.items = normalizeItems(payload.items)
+  }
+
+  await updateDoc(doc(db, COLLECTION, id), payload)
 }
 
 export async function updateOrderStatus(id: string, status: string) {
@@ -89,9 +126,9 @@ export async function updateOrderStatus(id: string, status: string) {
 }
 
 /**
- * Mantém compatibilidade com o app:
- * - Em alguns lugares ele chama duplicateOrder(order.id) (string)
- * - Em outros pode chamar duplicateOrder(order) (Order)
+ * Mantém compatibilidade:
+ * - Em alguns lugares: duplicateOrder(order.id) (string)
+ * - Em outros: duplicateOrder(order) (Order)
  */
 export async function duplicateOrder(orderOrId: Order | string) {
   await ensureAuthReady()
@@ -108,8 +145,11 @@ export async function duplicateOrder(orderOrId: Order | string) {
 
   const { id, ...data } = orderData
 
+  const payload: any = { ...data }
+  payload.items = normalizeItems(payload.items || [])
+
   const ref = await addDoc(collection(db, COLLECTION), {
-    ...data,
+    ...payload,
     status: 'Orçamento',
     createdAt: new Date(),
   })
