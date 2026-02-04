@@ -12,16 +12,13 @@ import type { Product } from '@/types'
 
 const COLLECTION = 'products'
 
-export async function getProducts() {
+export async function getAllProducts(): Promise<Product[]> {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  const q = query(
-    collection(db, COLLECTION),
-    orderBy('name', 'asc')
-  )
-
+  const q = query(collection(db, COLLECTION), orderBy('name', 'asc'))
   const snapshot = await getDocs(q)
+
   return snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Product[]
 }
 
@@ -37,6 +34,12 @@ export async function updateProduct(id: string, data: Partial<Product>) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  const ref = doc(db, COLLECTION, id)
-  await updateDoc(ref, data)
+  await updateDoc(doc(db, COLLECTION, id), data)
+}
+
+export async function toggleProductActive(id: string, active: boolean) {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  await updateDoc(doc(db, COLLECTION, id), { active })
 }
