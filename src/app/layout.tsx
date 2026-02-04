@@ -2,6 +2,7 @@ import './globals.css'
 import { Inter } from 'next/font/google'
 import { Navbar } from '@/components/Navbar'
 import { FirebaseBoot } from '@/components/FirebaseBoot'
+import { AuthGate } from '@/components/AuthGate'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -27,24 +28,22 @@ export const metadata = {
   },
 }
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="pt-BR">
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <meta name="theme-color" content="#1d4ed8" />
       </head>
-      <body className={inter.className + " overflow-x-hidden"}>
+      <body className={inter.className + ' overflow-x-hidden'}>
         <div className="min-h-screen bg-gray-50">
           <FirebaseBoot />
-          <Navbar />
-          <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-            {children}
-          </main>
+          <AuthGate>
+            <Navbar />
+            <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+              {children}
+            </main>
+          </AuthGate>
         </div>
       </body>
     </html>
