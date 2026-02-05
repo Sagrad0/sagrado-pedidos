@@ -1,7 +1,11 @@
 'use client'
 
 import { initializeApp, getApps } from 'firebase/app'
-import { initializeFirestore, getFirestore, type Firestore } from 'firebase/firestore'
+import {
+  initializeFirestore,
+  enableIndexedDbPersistence,
+  type Firestore,
+} from 'firebase/firestore'
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
@@ -17,7 +21,6 @@ function _getApp() {
   return getApps()[0]
 }
 
-// Export opcional (ajuda login/logout sem repetir config)
 export function getFirebaseApp() {
   return _getApp()
 }
@@ -25,43 +28,34 @@ export function getFirebaseApp() {
 // ---- FIRESTORE INSTANCE (sync, cached) ----
 let _db: Firestore | null = null
 
+/**
+ * Firestore transport tweaks para Safari/iOS (compatível com firebase@10.x):
+ * - força long-polling (Safari costuma falhar/engasgar em alguns transports)
+ * - mantém auto-detect ligado (não atrapalha e ajuda em redes esquisitas)
+ */
+const FIRESTORE_SETTINGS = {
+  experimentalAutoDetectLongPolling: true,
+  experimentalForceLongPolling: true,
+} as const
+
 export function getDbInstance(): Firestore {
   if (_db) return _db
   const app = _getApp()
-
-  // Safari iOS: evita travar criação/leitura usando fetch streams
-  // + tenta auto-detectar long-polling quando necessário
-  try {
-    _db = initializeFirestore(app, {
-      experimentalAutoDetectLongPolling: true,
-      useFetchStreams: false,
-    })
-  } catch {
-    // Se já estiver inicializado (hot reload / múltiplas execuções), cai no padrão
-    _db = getFirestore(app)
-  }
-
+  _db = initializeFirestore(app, FIRESTORE_SETTINGS)
   return _db
 }
 
 // ---- AUTH (lazy import) ----
 const ENABLE_ANON = (process.env.NEXT_PUBLIC_ENABLE_ANON_AUTH ?? '').toLowerCase() === 'true'
 
-/**
- * Garante que o Firebase Auth já resolveu o estado inicial.
- * - Se ENABLE_ANON=true: entra como anônimo (apenas se não houver user)
- * - Se ENABLE_ANON=false: NÃO cria sessão anônima (exige login email/senha)
- */
 export async function ensureAuthReady() {
   const { getAuth, onAuthStateChanged, signInAnonymously } = await import('firebase/auth')
 
   const app = _getApp()
   const auth = getAuth(app)
 
-  // se já tem user, ok
   if (auth.currentUser) return auth
 
-  // espera o estado inicial resolver (ponto que evita race condition)
   await new Promise<void>((resolve) => {
     const unsub = onAuthStateChanged(auth, () => {
       unsub()
@@ -69,7 +63,6 @@ export async function ensureAuthReady() {
     })
   })
 
-  // se ainda não tem user e anon está habilitado, entra anônimo
   if (!auth.currentUser && ENABLE_ANON) {
     await signInAnonymously(auth)
   }
@@ -77,10 +70,8 @@ export async function ensureAuthReady() {
   return auth
 }
 
-// ---- FIRESTORE (persistence) ----
+// ---- FIRESTORE (lazy import) ----
 export async function ensureFirestorePersistence() {
-  const { enableIndexedDbPersistence } = await import('firebase/firestore')
-
   const db = getDbInstance()
 
   try {
