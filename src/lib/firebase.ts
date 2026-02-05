@@ -1,11 +1,7 @@
-import { initializeApp, getApps, getApp } from 'firebase/app'
-import {
-  initializeFirestore,
-  getFirestore,
-  enableIndexedDbPersistence,
-  Firestore
-} from 'firebase/firestore'
-import { getAuth } from 'firebase/auth'
+'use client'
+
+import { initializeApp, getApps } from 'firebase/app'
+import { initializeFirestore, getFirestore, type Firestore } from 'firebase/firestore'
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY!,
@@ -13,44 +9,85 @@ const firebaseConfig = {
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID!,
   storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET!,
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID!,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID!
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
 }
 
-// Evita múltiplas inicializações (crítico no iOS)
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig)
+function _getApp() {
+  if (!getApps().length) initializeApp(firebaseConfig)
+  return getApps()[0]
+}
 
-const auth = getAuth(app)
+// Export opcional (ajuda login/logout sem repetir config)
+export function getFirebaseApp() {
+  return _getApp()
+}
 
-// Cache da instância do Firestore
+// ---- FIRESTORE INSTANCE (sync, cached) ----
 let _db: Firestore | null = null
 
-export function getDbInstance() {
+export function getDbInstance(): Firestore {
   if (_db) return _db
+  const app = _getApp()
 
-  _db = initializeFirestore(app, {
-    experimentalAutoDetectLongPolling: true,
-    useFetchStreams: false
-  })
+  // Safari iOS: evita travar criação/leitura usando fetch streams
+  // + tenta auto-detectar long-polling quando necessário
+  try {
+    _db = initializeFirestore(app, {
+      experimentalAutoDetectLongPolling: true,
+      useFetchStreams: false,
+    })
+  } catch {
+    // Se já estiver inicializado (hot reload / múltiplas execuções), cai no padrão
+    _db = getFirestore(app)
+  }
 
   return _db
 }
 
-const db = getDbInstance()
+// ---- AUTH (lazy import) ----
+const ENABLE_ANON = (process.env.NEXT_PUBLIC_ENABLE_ANON_AUTH ?? '').toLowerCase() === 'true'
 
-export async function ensureFirestorePersistence() {
-  try {
-    await enableIndexedDbPersistence(db)
-  } catch (err: any) {
-    // Falha comum no iOS / múltiplas abas
-    if (
-      err.code === 'failed-precondition' ||
-      err.code === 'unimplemented'
-    ) {
-      console.warn('Firestore persistence not enabled:', err.code)
-    } else {
-      console.error('Firestore persistence error:', err)
-    }
+/**
+ * Garante que o Firebase Auth já resolveu o estado inicial.
+ * - Se ENABLE_ANON=true: entra como anônimo (apenas se não houver user)
+ * - Se ENABLE_ANON=false: NÃO cria sessão anônima (exige login email/senha)
+ */
+export async function ensureAuthReady() {
+  const { getAuth, onAuthStateChanged, signInAnonymously } = await import('firebase/auth')
+
+  const app = _getApp()
+  const auth = getAuth(app)
+
+  // se já tem user, ok
+  if (auth.currentUser) return auth
+
+  // espera o estado inicial resolver (ponto que evita race condition)
+  await new Promise<void>((resolve) => {
+    const unsub = onAuthStateChanged(auth, () => {
+      unsub()
+      resolve()
+    })
+  })
+
+  // se ainda não tem user e anon está habilitado, entra anônimo
+  if (!auth.currentUser && ENABLE_ANON) {
+    await signInAnonymously(auth)
   }
+
+  return auth
 }
 
-export { app, auth, db }
+// ---- FIRESTORE (persistence) ----
+export async function ensureFirestorePersistence() {
+  const { enableIndexedDbPersistence } = await import('firebase/firestore')
+
+  const db = getDbInstance()
+
+  try {
+    await enableIndexedDbPersistence(db)
+  } catch {
+    // best-effort (multi-tab, private mode etc)
+  }
+
+  return db
+}
