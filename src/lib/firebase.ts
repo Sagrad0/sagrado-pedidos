@@ -28,11 +28,6 @@ export function getFirebaseApp() {
 // ---- FIRESTORE INSTANCE (sync, cached) ----
 let _db: Firestore | null = null
 
-/**
- * Firestore transport tweaks para Safari/iOS (compatível com firebase@10.x):
- * - força long-polling (Safari costuma falhar/engasgar em alguns transports)
- * - mantém auto-detect ligado (não atrapalha e ajuda em redes esquisitas)
- */
 const FIRESTORE_SETTINGS = {
   experimentalAutoDetectLongPolling: true,
   experimentalForceLongPolling: true,
@@ -56,11 +51,20 @@ export async function ensureAuthReady() {
 
   if (auth.currentUser) return auth
 
-  await new Promise<void>((resolve) => {
-    const unsub = onAuthStateChanged(auth, () => {
-      unsub()
-      resolve()
-    })
+  await new Promise<void>((resolve, reject) => {
+    let unsub: (() => void) | null = null
+
+    unsub = onAuthStateChanged(
+      auth,
+      () => {
+        if (unsub) unsub()
+        resolve()
+      },
+      (err) => {
+        if (unsub) unsub()
+        reject(err)
+      }
+    )
   })
 
   if (!auth.currentUser && ENABLE_ANON) {
@@ -70,14 +74,14 @@ export async function ensureAuthReady() {
   return auth
 }
 
-// ---- FIRESTORE (lazy import) ----
+// ---- FIRESTORE (persistence) ----
 export async function ensureFirestorePersistence() {
   const db = getDbInstance()
 
   try {
     await enableIndexedDbPersistence(db)
   } catch {
-    // best-effort (multi-tab, private mode etc)
+    // best-effort
   }
 
   return db
