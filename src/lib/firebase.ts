@@ -28,8 +28,8 @@ export function getFirebaseApp() {
 // ---- FIRESTORE INSTANCE (sync, cached) ----
 let _db: Firestore | null = null
 
+// ✅ Não pode combinar com experimentalAutoDetectLongPolling
 const FIRESTORE_SETTINGS = {
-  experimentalAutoDetectLongPolling: true,
   experimentalForceLongPolling: true,
 } as const
 
