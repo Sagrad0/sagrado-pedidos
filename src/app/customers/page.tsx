@@ -25,6 +25,9 @@ export default function CustomersPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [loading, setLoading] = useState(true)
 
+  // ✅ Observabilidade: erro do submit (pra enxergar no iPhone sem DevTools)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
   const { register, handleSubmit, reset, setValue, formState: { errors } } = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
   })
@@ -51,6 +54,9 @@ export default function CustomersPage() {
   }
 
   const openModal = (customer?: Customer) => {
+    // ✅ limpa erro ao abrir modal
+    setSubmitError(null)
+
     if (customer) {
       setSelectedCustomer(customer)
       setValue('name', customer.name)
@@ -68,6 +74,8 @@ export default function CustomersPage() {
   const closeModal = () => setIsModalOpen(false)
 
   const onSubmit = async (values: CustomerFormValues) => {
+    setSubmitError(null)
+
     const payload: CustomerFormData = {
       name: values.name,
       doc: values.doc || undefined,
@@ -75,15 +83,32 @@ export default function CustomersPage() {
       email: values.email || undefined,
       address: values.address || undefined,
     }
-    if (selectedCustomer) {
-      await updateCustomer(selectedCustomer.id, payload)
-    } else {
-      await createCustomer(payload)
+
+    try {
+      if (selectedCustomer) {
+        await updateCustomer(selectedCustomer.id, payload)
+      } else {
+        await createCustomer(payload)
+      }
+
+      const data = await getAllCustomers()
+      setCustomers(data)
+      setFilteredCustomers(data)
+      setIsModalOpen(false)
+
+    } catch (err: any) {
+      console.error('[customers.page] submit FAILED', {
+        code: err?.code,
+        message: err?.message,
+        name: err?.name,
+      })
+
+      const msg = err?.code
+        ? `${err.code}: ${err.message ?? 'erro ao salvar'}`
+        : (err?.message ?? 'Erro ao salvar cliente')
+
+      setSubmitError(msg)
     }
-    const data = await getAllCustomers()
-    setCustomers(data)
-    setFilteredCustomers(data)
-    setIsModalOpen(false)
   }
 
   const handleEdit = (customer: Customer) => openModal(customer)
@@ -137,7 +162,7 @@ export default function CustomersPage() {
           </div>
         ))}
       </div>
-      
+
       {/* Desktop table */}
       <div className="hidden md:block">
         <div className="card overflow-x-auto">
@@ -200,12 +225,19 @@ export default function CustomersPage() {
               <button onClick={closeModal} className="text-gray-500 hover:text-gray-700">✕</button>
             </div>
             <form className="p-6 space-y-4" onSubmit={handleSubmit(onSubmit)}>
+              {/* ✅ Mensagem de erro do submit (aparece no iPhone) */}
+              {submitError && (
+                <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+                  {submitError}
+                </div>
+              )}
+
               <div>
                 <label className="form-label">Nome</label>
                 <input {...register('name')} className="form-input" />
                 {errors.name && <p className="text-red-500 text-sm">{errors.name.message}</p>}
               </div>
-              
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="form-label">Telefone</label>
@@ -217,18 +249,18 @@ export default function CustomersPage() {
                   <input {...register('doc')} className="form-input" />
                 </div>
               </div>
-              
+
               <div>
                 <label className="form-label">Email</label>
                 <input {...register('email')} type="email" className="form-input" />
                 {errors.email && <p className="text-red-500 text-sm">{errors.email.message}</p>}
               </div>
-              
+
               <div>
                 <label className="form-label">Endereço</label>
                 <input {...register('address')} className="form-input" />
               </div>
-              
+
               <div className="pt-2 flex gap-3">
                 <button type="submit" className="btn btn-primary flex-1">
                   {selectedCustomer ? 'Salvar' : 'Criar'}
