@@ -41,15 +41,32 @@ export async function createCustomer(data: Partial<Customer>) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  const ref = await addDoc(collection(db, COLLECTION), data)
-  return ref.id
+  try {
+    const ref = await addDoc(collection(db, COLLECTION), data)
+    return ref.id
+  } catch (err: any) {
+    console.error('[customers.createCustomer] FAILED', {
+      code: err?.code,
+      message: err?.message,
+      name: err?.name,
+    })
+    throw err
+  }
 }
 
 export async function updateCustomer(id: string, data: Partial<Customer>) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  await updateDoc(doc(db, COLLECTION, id), data)
+  try {
+    await updateDoc(doc(db, COLLECTION, id), data)
+  } catch (err: any) {
+    console.error('[customers.updateCustomer] FAILED', {
+      code: err?.code,
+      message: err?.message,
+    })
+    throw err
+  }
 }
 
 export async function deleteCustomer(id: string) {
