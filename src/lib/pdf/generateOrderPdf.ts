@@ -2,22 +2,11 @@
  * FIX ABSOLUTO: Implementado sistema de células com boundary enforcement
  * - Cada célula agora tem área de desenho exclusiva e protegida
  * - Truncamento forçado em TODOS os campos (SKU, Produto, Unit, Qtd, Preço, Total)
- * - Clipping automático que impede texto de vazar para células vizinhas
  * - Fonte reduzida e padding otimizado
- * - Sistema de layout baseado em células com coordenadas precisas
  * - Sanitização completa de entrada para evitar NaN e valores inválidos
- *
- * ESTE CÓDIGO GARANTE QUE:
- * ✅ SKU nunca invade coluna Produto
- * ✅ Produto nunca invade coluna Unit
- * ✅ Unit nunca invade coluna Qtd
- * ✅ Qtd nunca invade coluna Preço
- * ✅ Preço nunca invade coluna Total
- * ✅ Total nunca invade fora da tabela
  */
 
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
-import { formatCurrency } from '@/lib/utils'
 import type { Order } from '@/types'
 
 // ===== CONSTANTES =====
@@ -25,6 +14,14 @@ const A4_W = 595.28
 const A4_H = 841.89
 const M = 40
 const W = A4_W - M * 2
+
+// ✅ Currency local (sem import externo)
+const formatCurrency = (v: number) => {
+  const n = Number(v)
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+    Number.isFinite(n) ? n : 0
+  )
+}
 
 // ===== CONFIGURAÇÃO DA TABELA =====
 const TABLE_CONFIG = {
@@ -35,20 +32,20 @@ const TABLE_CONFIG = {
     unit: { width: 32, label: 'UN' },
     qty: { width: 40, label: 'QTD' },
     price: { width: 60, label: 'PREÇO' },
-    total: { width: 70, label: 'TOTAL' }
+    total: { width: 70, label: 'TOTAL' },
   },
   rowHeight: 18,
   headerHeight: 22,
   fontSize: 7,
   headerFontSize: 7,
-  cellPadding: 2
+  cellPadding: 2,
 }
 
 // ===== SPACING =====
 const SPACING = {
   sectionGap: 18,
   headerGap: 12,
-  padding: 8
+  padding: 8,
 }
 
 // ===== FUNÇÕES UTILITÁRIAS =====
@@ -73,10 +70,8 @@ const calculateColumnX = (startX: number, widths: number[], index: number) => {
 }
 
 const sumOrderTotal = (order: any) => {
-  // Prioriza totals.total (novo schema)
   if (order?.totals?.total != null) return safeNum(order.totals.total, 0)
 
-  // fallback: soma items
   const items = Array.isArray(order?.items) ? order.items : []
   return items.reduce((acc: number, it: any) => {
     const qty = safeNum(it.qty ?? it.quantity, 0)
@@ -108,7 +103,7 @@ export async function generateOrderPdf(order: Order) {
       y,
       size,
       font: isBold ? bold : font,
-      color
+      color,
     })
   }
 
@@ -119,7 +114,7 @@ export async function generateOrderPdf(order: Order) {
       width: w,
       height: h,
       borderColor: rgb(0.85, 0.85, 0.85),
-      borderWidth: 1
+      borderWidth: 1,
     })
   }
 
@@ -131,7 +126,6 @@ export async function generateOrderPdf(order: Order) {
     const key = `${k}: `
     drawText(key, x, y, 8, true, rgb(0.2, 0.2, 0.2))
 
-    // truncamento aproximado baseado em largura
     const maxChars = Math.floor(maxW / 4.2)
     const val = truncateText(v, Math.max(10, maxChars))
     drawText(val, x + 46, y, 8, false, rgb(0.1, 0.1, 0.1))
@@ -152,10 +146,9 @@ export async function generateOrderPdf(order: Order) {
   }
 
   const drawTableHeader = (topY: number) => {
-    const colWidths = Object.values(TABLE_CONFIG.columns).map(c => c.width)
+    const colWidths = Object.values(TABLE_CONFIG.columns).map((c) => c.width)
     const tableStartX = M + 8
 
-    // header background
     page.drawRectangle({
       x: tableStartX,
       y: topY - TABLE_CONFIG.headerHeight,
@@ -163,17 +156,16 @@ export async function generateOrderPdf(order: Order) {
       height: TABLE_CONFIG.headerHeight,
       color: rgb(0.95, 0.95, 0.95),
       borderColor: rgb(0.85, 0.85, 0.85),
-      borderWidth: 1
+      borderWidth: 1,
     })
 
-    // vertical lines
     let cx = tableStartX
     for (let i = 0; i < colWidths.length; i++) {
       page.drawLine({
         start: { x: cx, y: topY },
         end: { x: cx, y: topY - TABLE_CONFIG.headerHeight },
         thickness: 1,
-        color: rgb(0.85, 0.85, 0.85)
+        color: rgb(0.85, 0.85, 0.85),
       })
       cx += colWidths[i]
     }
@@ -181,13 +173,20 @@ export async function generateOrderPdf(order: Order) {
       start: { x: cx, y: topY },
       end: { x: cx, y: topY - TABLE_CONFIG.headerHeight },
       thickness: 1,
-      color: rgb(0.85, 0.85, 0.85)
+      color: rgb(0.85, 0.85, 0.85),
     })
 
-    // labels
     let x = tableStartX + TABLE_CONFIG.cellPadding
     const cols = TABLE_CONFIG.columns
-    const labels = [cols.idx.label, cols.sku.label, cols.prod.label, cols.unit.label, cols.qty.label, cols.price.label, cols.total.label]
+    const labels = [
+      cols.idx.label,
+      cols.sku.label,
+      cols.prod.label,
+      cols.unit.label,
+      cols.qty.label,
+      cols.price.label,
+      cols.total.label,
+    ]
 
     labels.forEach((lbl, i) => {
       drawText(lbl, x, topY - 15, TABLE_CONFIG.headerFontSize, true, rgb(0.2, 0.2, 0.2))
@@ -198,29 +197,27 @@ export async function generateOrderPdf(order: Order) {
   }
 
   const drawRow = (rowY: number, idx: number, item: any) => {
-    const colWidths = Object.values(TABLE_CONFIG.columns).map(c => c.width)
+    const colWidths = Object.values(TABLE_CONFIG.columns).map((c) => c.width)
     const tableStartX = M + 8
     const rowH = TABLE_CONFIG.rowHeight
     const pad = TABLE_CONFIG.cellPadding
 
-    // row border
     page.drawRectangle({
       x: tableStartX,
       y: rowY - rowH,
       width: colWidths.reduce((a, b) => a + b, 0),
       height: rowH,
       borderColor: rgb(0.9, 0.9, 0.9),
-      borderWidth: 1
+      borderWidth: 1,
     })
 
-    // vertical separators
     let cx = tableStartX
     for (let i = 0; i < colWidths.length; i++) {
       page.drawLine({
         start: { x: cx, y: rowY },
         end: { x: cx, y: rowY - rowH },
         thickness: 1,
-        color: rgb(0.92, 0.92, 0.92)
+        color: rgb(0.92, 0.92, 0.92),
       })
       cx += colWidths[i]
     }
@@ -228,7 +225,7 @@ export async function generateOrderPdf(order: Order) {
       start: { x: cx, y: rowY },
       end: { x: cx, y: rowY - rowH },
       thickness: 1,
-      color: rgb(0.92, 0.92, 0.92)
+      color: rgb(0.92, 0.92, 0.92),
     })
 
     const prod = item.productSnapshot || item
@@ -240,7 +237,6 @@ export async function generateOrderPdf(order: Order) {
     const unitPrice = safeNum(item.unitPrice ?? item.price, 0)
     const total = item.total != null ? safeNum(item.total, qty * unitPrice) : qty * unitPrice
 
-    // X coords
     const colX = {
       idx: tableStartX,
       sku: calculateColumnX(tableStartX, colWidths, 0),
@@ -248,19 +244,18 @@ export async function generateOrderPdf(order: Order) {
       unit: calculateColumnX(tableStartX, colWidths, 2),
       qty: calculateColumnX(tableStartX, colWidths, 3),
       price: calculateColumnX(tableStartX, colWidths, 4),
-      total: calculateColumnX(tableStartX, colWidths, 5)
+      total: calculateColumnX(tableStartX, colWidths, 5),
     }
 
-    // text Y baseline
     const ty = rowY - 12
 
-    drawText(String(idx), colX.idx + pad, ty, TABLE_CONFIG.fontSize, false)
-    drawText(sku, colX.sku + pad, ty, TABLE_CONFIG.fontSize, false)
-    drawText(name, colX.prod + pad, ty, TABLE_CONFIG.fontSize, false)
-    drawText(unit, colX.unit + pad, ty, TABLE_CONFIG.fontSize, false)
-    drawText(String(qty), colX.qty + pad, ty, TABLE_CONFIG.fontSize, false)
-    drawText(formatCurrency(unitPrice), colX.price + pad, ty, TABLE_CONFIG.fontSize, false)
-    drawText(formatCurrency(total), colX.total + pad, ty, TABLE_CONFIG.fontSize, false)
+    drawText(String(idx), colX.idx + pad, ty)
+    drawText(sku, colX.sku + pad, ty)
+    drawText(name, colX.prod + pad, ty)
+    drawText(unit, colX.unit + pad, ty)
+    drawText(String(qty), colX.qty + pad, ty)
+    drawText(formatCurrency(unitPrice), colX.price + pad, ty)
+    drawText(formatCurrency(total), colX.total + pad, ty)
 
     return rowY - rowH
   }
@@ -277,6 +272,7 @@ export async function generateOrderPdf(order: Order) {
   // ===== CLIENTE BLOCK =====
   const c = (order as any).customerSnapshot || {}
   const blockH = 128
+
   drawBox(M, y, W, blockH)
   drawSectionTitle('DADOS DO CLIENTE', M + SPACING.padding, y)
 
@@ -299,16 +295,14 @@ export async function generateOrderPdf(order: Order) {
   drawSectionTitle('ITENS DO PEDIDO', M + 4, y + 12)
   y -= 20
 
-  const tableTopY = y
-  y = drawTableHeader(tableTopY)
+  y = drawTableHeader(y)
 
   const items = Array.isArray((order as any).items) ? (order as any).items : []
 
   for (let i = 0; i < items.length; i++) {
     if (y - TABLE_CONFIG.rowHeight < M + 160) {
       newPage()
-      const tTop = y
-      y = drawTableHeader(tTop)
+      y = drawTableHeader(y)
     }
     y = drawRow(y, i + 1, items[i])
   }
@@ -317,8 +311,8 @@ export async function generateOrderPdf(order: Order) {
 
   // ===== TOTALS =====
   const totalOrder = sumOrderTotal(order)
-
   const totalsBlockH = 90
+
   drawBox(M, y, W, totalsBlockH)
   drawSectionTitle('TOTAIS', M + SPACING.padding, y)
 
@@ -329,10 +323,9 @@ export async function generateOrderPdf(order: Order) {
   drawKV('Desconto', formatCurrency(safeNum(totals.discount, 0)), M + SPACING.padding, tTopY - 18, W / 2 - SPACING.padding * 2)
   drawKV('Frete', formatCurrency(safeNum(totals.freight, 0)), M + SPACING.padding, tTopY - 36, W / 2 - SPACING.padding * 2)
 
-  // total
   const totalY = y - totalsBlockH + 18
   drawText('TOTAL:', A4_W - M - 200, totalY, 12, true, rgb(0.2, 0.2, 0.2))
-  drawText(formatCurrency(safeNum(totals.total, totalOrder)), A4_W - M - 120, totalY, 12, true, rgb(0, 0, 0))
+  drawText(formatCurrency(safeNum(totals.total, totalOrder)), A4_W - M - 120, totalY, 12, true)
 
   // ===== FOOTER =====
   const footerY = 28
