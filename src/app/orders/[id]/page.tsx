@@ -47,9 +47,9 @@ export default function OrderDetailsPage() {
 
     const bytes = await generateOrderPdf(order)
 
-    // ✅ FIX TS/Next: garantir ArrayBuffer "puro" (evita ArrayBufferLike/SharedArrayBuffer)
-    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-    const blob = new Blob([ab], { type: 'application/pdf' })
+    // ✅ FIX DEFINITIVO (TS/Next): evita ArrayBuffer/SharedArrayBuffer
+    // Blob aceita number[] sem briga de tipos.
+    const blob = new Blob([Array.from(bytes)], { type: 'application/pdf' })
 
     const url = URL.createObjectURL(blob)
     window.open(url, '_blank')
@@ -194,8 +194,7 @@ export default function OrderDetailsPage() {
                 const prod = it.productSnapshot || it
                 const qty = Number(it.qty ?? it.quantity ?? 0)
                 const unitPrice = Number(it.unitPrice ?? it.price ?? 0)
-                const lineTotal =
-                  it.total != null ? Number(it.total) : qty * unitPrice
+                const lineTotal = it.total != null ? Number(it.total) : qty * unitPrice
 
                 return (
                   <tr key={`${idx}-${String(it.productId || '')}`} className="border-b">
