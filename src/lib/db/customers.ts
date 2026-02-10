@@ -37,10 +37,22 @@ function buildSearchTokens(c: Partial<Customer>): string[] {
   push(c.email)
   push(c.addressMain)
   push(c.addressDelivery)
+  // campo legado (mantido no tipo Customer para compatibilidade)
   push(c.address)
 
   // remove duplicados
   return Array.from(new Set(tokens))
+}
+
+// Firestore NÃO aceita valores `undefined` em nenhum campo.
+// Como o payload vem de formulários (Partial<Customer>), é comum existir chave com undefined.
+// Sanitizamos removendo essas chaves antes de addDoc/updateDoc.
+function stripUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
+  const out: any = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v
+  }
+  return out
 }
 
 export async function getAllCustomers(): Promise<Customer[]> {
@@ -83,11 +95,12 @@ export async function createCustomer(data: Partial<Customer>) {
 
   try {
     const now = Date.now()
-    const payload: Partial<Customer> = {
+
+    const payload = stripUndefined({
       ...data,
       createdAt: typeof data.createdAt === 'number' ? data.createdAt : now,
       updatedAt: now,
-    }
+    } as any) as Partial<Customer>
 
     payload.search = buildSearchTokens(payload)
 
@@ -108,10 +121,10 @@ export async function updateCustomer(id: string, data: Partial<Customer>) {
   const db = getDbInstance()
 
   try {
-    const payload: Partial<Customer> = {
+    const payload = stripUndefined({
       ...data,
       updatedAt: Date.now(),
-    }
+    } as any) as Partial<Customer>
 
     payload.search = buildSearchTokens(payload)
 
