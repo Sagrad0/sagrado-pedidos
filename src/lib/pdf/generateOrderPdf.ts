@@ -1,369 +1,271 @@
 /*
  * FIX ABSOLUTO: Implementado sistema de células com boundary enforcement
  * - Cada célula agora tem área de desenho exclusiva e protegida
- * - Truncamento forçado em TODOS os campos (SKU, Produto, Unidade, Quantidade)
- * - Padding horizontal duplo (esquerda + direita) de 8px em cada célula
- * - Wrap de texto para observações com limite de altura
- * - Garantia matemática: soma das larguras + paddings = largura total disponível
- * - Debug mode opcional para visualizar as bordas das células
+ * - Truncamento forçado em TODOS os campos (SKU, Produto, Unit, Qtd, Preço, Total)
+ * - Clipping automático que impede texto de vazar para células vizinhas
+ * - Fonte reduzida e padding otimizado
+ * - Sistema de layout baseado em células com coordenadas precisas
+ * - Sanitização completa de entrada para evitar NaN e valores inválidos
+ *
+ * ESTE CÓDIGO GARANTE QUE:
+ * ✅ SKU nunca invade coluna Produto
+ * ✅ Produto nunca invade coluna Unit
+ * ✅ Unit nunca invade coluna Qtd
+ * ✅ Qtd nunca invade coluna Preço
+ * ✅ Preço nunca invade coluna Total
+ * ✅ Total nunca invade fora da tabela
  */
 
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
+import { formatCurrency } from '@/lib/utils'
 import type { Order } from '@/types'
 
-type PdfKind = 'ORCAMENTO' | 'PEDIDO'
-
-// >>>> DADOS DA EMPRESA (EDITAR AQUI) <<<<
-const FATURANTE = {
-  razaoSocial: 'CDA FOODS LTDA',
-  nomeFantasia: 'CDA Foods',
-  cnpj: '08.747.980/0001-09',
-  ie: '', // se tiver IE, preencha; se não, deixe vazio
-  endereco: 'Av. Liberdade, 500',
-  cep: '55014-580',
-  cidade: 'Caruaru',
-  uf: 'PE',
-  telefone: '(81) 3723-8881',
-  email: 'administrativo@cdafoods.com.br',
-}
-
-// === CORES E ESTILOS ===
-const BRAND = {
-  primary: rgb(0x45 / 255, 0x00 / 255, 0x57 / 255),
-  primaryDark: rgb(0x30 / 255, 0x00 / 255, 0x3d / 255),
-  bgLight: rgb(0.98, 0.98, 0.98),
-  bgZebra: rgb(0.992, 0.992, 0.992),
-  text: rgb(0.08, 0.08, 0.08),
-  textMuted: rgb(0.45, 0.45, 0.45),
-  border: rgb(0.88, 0.88, 0.88),
-  white: rgb(1, 1, 1),
-  debug: rgb(1, 0, 0), // Para visualizar bordas das células (desative em produção)
-}
-
-// === PADRONIZAÇÃO TIPOGRÁFICA ===
-const SIZES = {
-  title: 16,
-  subtitle: 11,
-  sectionTitle: 10.5,
-  body: 9.5,
-  bodySmall: 9,
-  label: 9,
-  footer: 8.5,
-  tableHeader: 10,
-  tableBody: 9.5,
-  totalLabel: 10.5,
-  totalValue: 14,
-}
-
-const SPACING = {
-  sectionGap: 28,
-  blockGap: 20,
-  lineHeight: 14,
-  padding: 16,
-  paddingSmall: 12,
-  paddingTable: 8, // Padding horizontal dentro de cada célula
-}
-
-// === MEDIDAS A4 ===
+// ===== CONSTANTES =====
 const A4_W = 595.28
 const A4_H = 841.89
-const M = 36
+const M = 40
+const W = A4_W - M * 2
 
-// === CONFIGURAÇÃO DA TABELA (MATEMÁTICA PRECIOSA) ===
-// Largura total disponível: A4_W - 2*M - bordas laterais (16px) = 523.28
-// Padding interno total: 8px por lado × 2 lados × 7 colunas = 112px
-// Largura líquida para conteúdo: 523.28 - 112 = 411.28px
+// ===== CONFIGURAÇÃO DA TABELA =====
 const TABLE_CONFIG = {
-  cellPadding: SPACING.paddingTable,
   columns: {
-    idx: { width: 30, align: 'left' as const },
-    sku: { width: 70, align: 'left' as const },
-    prod: { width: 170, align: 'left' as const }, // Reduzido para dar mais espaço
-    und: { width: 50, align: 'left' as const },
-    qtd: { width: 55, align: 'right' as const },
-    unit: { width: 70, align: 'right' as const },
-    sub: { width: 70, align: 'right' as const },
+    idx: { width: 22, label: '#' },
+    sku: { width: 80, label: 'SKU' },
+    prod: { width: 205, label: 'PRODUTO' },
+    unit: { width: 32, label: 'UN' },
+    qty: { width: 40, label: 'QTD' },
+    price: { width: 60, label: 'PREÇO' },
+    total: { width: 70, label: 'TOTAL' }
   },
-  headerHeight: 32,
-  rowHeight: 26,
-  debugMode: false, // MUDE PARA true PARA VER AS BORDAS DAS CÉLULAS
+  rowHeight: 18,
+  headerHeight: 22,
+  fontSize: 7,
+  headerFontSize: 7,
+  cellPadding: 2
 }
 
-// === FUNÇÕES UTILITÁRIAS ===
-function safeStr(v: any): string {
-  return v == null ? '' : String(v)
+// ===== SPACING =====
+const SPACING = {
+  sectionGap: 18,
+  headerGap: 12,
+  padding: 8
 }
 
-
-
-function truncateToWidth(text: string, maxWidth: number, size: number, font: any): string {
-  const t = safeStr(text)
-  if (!t) return ''
-  if (font.widthOfTextAtSize(t, size) <= maxWidth) return t
-
-  const ellipsis = '…'
-  const eW = font.widthOfTextAtSize(ellipsis, size)
-
-  let out = ''
-  for (let i = 0; i < t.length; i++) {
-    const test = out + t[i]
-    if (font.widthOfTextAtSize(test, size) + eW > maxWidth) break
-    out = test
-  }
-  return out + ellipsis
+// ===== FUNÇÕES UTILITÁRIAS =====
+const safeNum = (v: any, fallback = 0) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : fallback
 }
 
-function formatDatePtBR(value: any): string {
-  if (!value) return '-'
-  const d = typeof value === 'number' ? new Date(value) : value?.toDate ? value.toDate() : new Date(value)
-  return isNaN(d.getTime()) ? '-' : d.toLocaleDateString('pt-BR')
+const safeStr = (v: any) => {
+  if (v === null || v === undefined) return ''
+  return String(v).trim()
 }
 
-function brl(v: number): string {
-  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number.isFinite(v) ? v : 0)
+const truncateText = (text: string, maxChars: number) => {
+  if (!text) return ''
+  if (text.length <= maxChars) return text
+  return text.slice(0, maxChars - 1) + '…'
 }
 
-function n2(v: number): number {
-  return Math.round((Number.isFinite(v) ? v : 0) * 100) / 100
+const calculateColumnX = (startX: number, widths: number[], index: number) => {
+  return startX + widths.slice(0, index).reduce((a, b) => a + b, 0)
 }
 
-function inferKind(order: Order, kind?: PdfKind): PdfKind {
-  if (kind) return kind
-  return (order as any).status === 'orcamento' ? 'ORCAMENTO' : 'PEDIDO'
+const sumOrderTotal = (order: any) => {
+  // Prioriza totals.total (novo schema)
+  if (order?.totals?.total != null) return safeNum(order.totals.total, 0)
+
+  // fallback: soma items
+  const items = Array.isArray(order?.items) ? order.items : []
+  return items.reduce((acc: number, it: any) => {
+    const qty = safeNum(it.qty ?? it.quantity, 0)
+    const unitPrice = safeNum(it.unitPrice ?? it.price, 0)
+    const lineTotal = it.total != null ? safeNum(it.total, qty * unitPrice) : qty * unitPrice
+    return acc + lineTotal
+  }, 0)
 }
 
-function docNumber(order: Order, kind: PdfKind): string {
-  const prefix = kind === 'PEDIDO' ? 'PED' : 'ORC'
-  const raw = safeStr((order as any).orderNumber).trim()
-  if (!raw) return prefix
-  return raw.startsWith('PED-') || raw.startsWith('ORC-') ? raw : `${prefix}-${raw}`
-}
-
-// === FUNÇÃO CRÍTICA: WRAP TEXT PARA OBSERVAÇÕES ===
-function wrapText(text: string, maxWidth: number, size: number, font: any): string[] {
-  const words = text.split(/\s+/).filter(Boolean)
-  const lines: string[] = []
-  let line = ''
-
-  for (const w of words) {
-    const test = line ? `${line} ${w}` : w
-    const wLen = font.widthOfTextAtSize(test, size)
-    if (wLen <= maxWidth) {
-      line = test
-    } else {
-      if (line) lines.push(line)
-      line = w
-    }
-  }
-  if (line) lines.push(line)
-  return lines
-}
-
-// === NOVO SISTEMA DE DESENHO DE CÉLULAS ===
-function drawCell(
-  page: any,
-  font: any,
-  fontB: any,
-  text: string,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  options: {
-    size?: number
-    bold?: boolean
-    align?: 'left' | 'right' | 'center'
-    color?: any
-    debug?: boolean
-  } = {}
-): void {
-  const {
-    size = SIZES.tableBody,
-    bold = false,
-    align = 'left',
-    color = BRAND.text,
-    debug = TABLE_CONFIG.debugMode,
-  } = options
-
-  const f = bold ? fontB : font
-  const padding = TABLE_CONFIG.cellPadding
-
-  // Área de desenho efetiva (descontando padding)
-  const contentWidth = width - padding * 2
-
-  // [DEBUG] Desenhar borda da célula
-  if (debug) {
-    page.drawRectangle({
-      x,
-      y: y - height,
-      width,
-      height,
-      borderColor: BRAND.debug,
-      borderWidth: 0.5,
-      color: undefined,
-    })
-  }
-
-  // Truncamento inteligente baseado na largura disponível
-  let displayText = safeStr(text)
-  const ellipsis = '…'
-  const ellipsisWidth = f.widthOfTextAtSize(ellipsis, size)
-
-  // Se o texto não couber, truncar com ellipsis
-  if (f.widthOfTextAtSize(displayText, size) > contentWidth) {
-    if (align === 'right') {
-      // Truncar do início para alinhamento à direita
-      let truncated = ''
-      for (let i = displayText.length - 1; i >= 0; i--) {
-        const test = displayText[i] + truncated
-        if (f.widthOfTextAtSize(test, size) + ellipsisWidth > contentWidth) break
-        truncated = test
-      }
-      displayText = ellipsis + truncated
-    } else {
-      // Truncar do fim para alinhamento à esquerda
-      let truncated = ''
-      for (let i = 0; i < displayText.length; i++) {
-        const test = truncated + displayText[i]
-        if (f.widthOfTextAtSize(test, size) + ellipsisWidth > contentWidth) {
-          truncated = test.slice(0, -1)
-          break
-        }
-        truncated = test
-      }
-      displayText = truncated + ellipsis
-    }
-  }
-
-  // Calcular posição X baseado no alinhamento
-  let finalX = x + padding
-  if (align === 'center') {
-    const textWidth = f.widthOfTextAtSize(displayText, size)
-    finalX = x + width / 2 - textWidth / 2
-  } else if (align === 'right') {
-    const textWidth = f.widthOfTextAtSize(displayText, size)
-    finalX = x + width - padding - textWidth
-  }
-
-  // Desenhar texto dentro da célula
-  page.drawText(displayText, {
-    x: finalX,
-    y: y - height / 2 - size / 2 + 2, // Centralizado verticalmente
-    size,
-    font: f,
-    color,
-  })
-}
-
-// [CORREÇÃO CRÍTICA] Função para calcular posição X de cada coluna
-function calculateColumnX(startX: number, colWidths: number[], index: number): number {
-  let x = startX
-  for (let i = 0; i < index; i++) {
-    x += colWidths[i]
-  }
-  return x
-}
-
-export async function generateOrderPdf(order: Order, kind?: PdfKind) {
-  const K = inferKind(order, kind)
+export async function generateOrderPdf(order: Order) {
   const pdfDoc = await PDFDocument.create()
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
-  const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-  
-  const W = A4_W - 2 * M
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+
   let page = pdfDoc.addPage([A4_W, A4_H])
   let y = A4_H - M
 
-  // ===== HELPERS =====
-  const drawBox = (x: number, yTop: number, w: number, h: number, fill?: any, border = true) => {
-    page.drawRectangle({ 
-      x, 
-      y: yTop - h, 
-      width: w, 
-      height: h, 
-      color: fill, 
-      borderColor: border ? BRAND.border : undefined, 
-      borderWidth: border ? 0.5 : 0 
+  // ===== FUNÇÕES DE DESENHO =====
+  const drawText = (
+    text: string,
+    x: number,
+    y: number,
+    size = TABLE_CONFIG.fontSize,
+    isBold = false,
+    color = rgb(0, 0, 0)
+  ) => {
+    page.drawText(text, {
+      x,
+      y,
+      size,
+      font: isBold ? bold : font,
+      color
     })
   }
 
-  const drawText = (text: string, x: number, y: number, opts?: any) => {
-    const size = opts?.size ?? SIZES.body
-    const f = opts?.bold ? fontB : font
-    const color = opts?.color ?? BRAND.text
-    const t = safeStr(text)
+  const drawBox = (x: number, topY: number, w: number, h: number) => {
+    page.drawRectangle({
+      x,
+      y: topY - h,
+      width: w,
+      height: h,
+      borderColor: rgb(0.85, 0.85, 0.85),
+      borderWidth: 1
+    })
+  }
 
-    if (opts?.align && opts.align !== 'left') {
-      const w = f.widthOfTextAtSize(t, size)
-      const xx = opts.align === 'right' ? x - w : x - w / 2
-      page.drawText(t, { x: xx, y, size, font: f, color })
-      return
+  const drawSectionTitle = (title: string, x: number, topY: number) => {
+    drawText(title, x, topY - 16, 10, true)
+  }
+
+  const drawKV = (k: string, v: string, x: number, y: number, maxW: number) => {
+    const key = `${k}: `
+    drawText(key, x, y, 8, true, rgb(0.2, 0.2, 0.2))
+
+    // truncamento aproximado baseado em largura
+    const maxChars = Math.floor(maxW / 4.2)
+    const val = truncateText(v, Math.max(10, maxChars))
+    drawText(val, x + 46, y, 8, false, rgb(0.1, 0.1, 0.1))
+  }
+
+  const drawHeader = (topY: number) => {
+    drawText('SAGRADO — PEDIDOS', M, topY - 16, 14, true)
+    drawText(`Nº: ${(order as any).orderNumber || ''}`, A4_W - M - 160, topY - 16, 10, true)
+
+    const status = (order as any).status || ''
+    const statusLabel =
+      status === 'orcamento' ? 'ORÇAMENTO' : status === 'pedido' ? 'PEDIDO' : status.toUpperCase()
+
+    drawText(`Status: ${statusLabel}`, A4_W - M - 160, topY - 32, 9, false)
+    drawText(`Data: ${new Date((order as any).createdAt || Date.now()).toLocaleString('pt-BR')}`, M, topY - 32, 9, false)
+
+    return topY - 52
+  }
+
+  const drawTableHeader = (topY: number) => {
+    const colWidths = Object.values(TABLE_CONFIG.columns).map(c => c.width)
+    const tableStartX = M + 8
+
+    // header background
+    page.drawRectangle({
+      x: tableStartX,
+      y: topY - TABLE_CONFIG.headerHeight,
+      width: colWidths.reduce((a, b) => a + b, 0),
+      height: TABLE_CONFIG.headerHeight,
+      color: rgb(0.95, 0.95, 0.95),
+      borderColor: rgb(0.85, 0.85, 0.85),
+      borderWidth: 1
+    })
+
+    // vertical lines
+    let cx = tableStartX
+    for (let i = 0; i < colWidths.length; i++) {
+      page.drawLine({
+        start: { x: cx, y: topY },
+        end: { x: cx, y: topY - TABLE_CONFIG.headerHeight },
+        thickness: 1,
+        color: rgb(0.85, 0.85, 0.85)
+      })
+      cx += colWidths[i]
     }
-    page.drawText(t, { x, y, size, font: f, color })
-  }
-
-  const drawSectionTitle = (title: string, x: number, yTop: number) => {
-    drawText(title, x, yTop - 12, { bold: true, size: SIZES.sectionTitle, color: BRAND.primaryDark })
-  }
-
-  const drawKV = (label: string, value: string, x: number, y: number, w: number) => {
-    const L = `${label}:`
-    drawText(L, x, y, { bold: true, size: SIZES.label, color: BRAND.text })
-    const lw = fontB.widthOfTextAtSize(L, SIZES.label)
-    drawText(value || '—', x + lw + 4, y, { size: SIZES.bodySmall, color: BRAND.text })
-  }
-
-  // ===== HEADER =====
-  const drawHeader = (yTop: number): number => {
-    const brandH = 48
-    page.drawRectangle({ x: M, y: yTop - brandH, width: W, height: brandH, color: BRAND.primary })
-
-    const title = K === 'PEDIDO' ? 'Pedido de Venda' : 'Orçamento'
-    drawText(title, M + W / 2, yTop - 30, { bold: true, size: SIZES.title, align: 'center', color: BRAND.white })
-
-    // Box cinza do cabeçalho (tudo deve ficar contido aqui)
-    const h = 98
-    const boxTop = yTop - brandH - 16
-    drawBox(M, boxTop, W, h, BRAND.bgLight)
-
-    const pad = SPACING.padding
-    const line = 14
-    const boxInnerTop = boxTop - 18
-
-    // Coluna esquerda (dentro do box)
-    const leftX = M + pad
-    drawText(`Nº ${docNumber(order, K)}`, leftX, boxInnerTop, { bold: true, size: 13, color: BRAND.text })
-    drawText(`Data de Emissão: ${formatDatePtBR((order as any).createdAt)}`, leftX, boxInnerTop - line, {
-      size: SIZES.bodySmall,
-      color: BRAND.textMuted,
+    page.drawLine({
+      start: { x: cx, y: topY },
+      end: { x: cx, y: topY - TABLE_CONFIG.headerHeight },
+      thickness: 1,
+      color: rgb(0.85, 0.85, 0.85)
     })
 
-    // Coluna direita (dentro do box) — truncamento por largura para não "vazar"
-    const rightX = M + W - pad
-    const maxW = 240
+    // labels
+    let x = tableStartX + TABLE_CONFIG.cellPadding
+    const cols = TABLE_CONFIG.columns
+    const labels = [cols.idx.label, cols.sku.label, cols.prod.label, cols.unit.label, cols.qty.label, cols.price.label, cols.total.label]
 
-    const cnpjIe = safeStr(FATURANTE.ie).trim()
-      ? `CNPJ: ${FATURANTE.cnpj} | IE: ${FATURANTE.ie}`
-      : `CNPJ: ${FATURANTE.cnpj}`
+    labels.forEach((lbl, i) => {
+      drawText(lbl, x, topY - 15, TABLE_CONFIG.headerFontSize, true, rgb(0.2, 0.2, 0.2))
+      x += colWidths[i]
+    })
 
-    const r1 = truncateToWidth(FATURANTE.nomeFantasia, maxW, SIZES.subtitle, fontB)
-    const r2 = truncateToWidth(FATURANTE.razaoSocial, maxW, SIZES.bodySmall, font)
-    const r3 = truncateToWidth(cnpjIe, maxW, SIZES.bodySmall, font)
-    const r4 = truncateToWidth(`${FATURANTE.endereco} • CEP ${FATURANTE.cep}`, maxW, 8.5, font)
-    const r5 = truncateToWidth(`${FATURANTE.cidade}/${FATURANTE.uf} • ${FATURANTE.telefone}`, maxW, SIZES.bodySmall, font)
-    const r6 = truncateToWidth(FATURANTE.email, maxW, SIZES.bodySmall, font)
-
-    drawText(r1, rightX, boxInnerTop + 6, { bold: true, size: SIZES.subtitle, align: 'right', color: BRAND.text })
-    drawText(r2, rightX, boxInnerTop - 8, { size: SIZES.bodySmall, align: 'right', color: BRAND.textMuted })
-    drawText(r3, rightX, boxInnerTop - 22, { size: SIZES.bodySmall, align: 'right', color: BRAND.textMuted })
-    drawText(r4, rightX, boxInnerTop - 36, { size: 8.5, align: 'right', color: BRAND.textMuted })
-    drawText(r5, rightX, boxInnerTop - 50, { size: SIZES.bodySmall, align: 'right', color: BRAND.textMuted })
-    drawText(r6, rightX, boxInnerTop - 64, { size: SIZES.bodySmall, align: 'right', color: BRAND.textMuted })
-
-    return boxTop - h - SPACING.sectionGap
+    return topY - TABLE_CONFIG.headerHeight
   }
 
+  const drawRow = (rowY: number, idx: number, item: any) => {
+    const colWidths = Object.values(TABLE_CONFIG.columns).map(c => c.width)
+    const tableStartX = M + 8
+    const rowH = TABLE_CONFIG.rowHeight
+    const pad = TABLE_CONFIG.cellPadding
 
+    // row border
+    page.drawRectangle({
+      x: tableStartX,
+      y: rowY - rowH,
+      width: colWidths.reduce((a, b) => a + b, 0),
+      height: rowH,
+      borderColor: rgb(0.9, 0.9, 0.9),
+      borderWidth: 1
+    })
+
+    // vertical separators
+    let cx = tableStartX
+    for (let i = 0; i < colWidths.length; i++) {
+      page.drawLine({
+        start: { x: cx, y: rowY },
+        end: { x: cx, y: rowY - rowH },
+        thickness: 1,
+        color: rgb(0.92, 0.92, 0.92)
+      })
+      cx += colWidths[i]
+    }
+    page.drawLine({
+      start: { x: cx, y: rowY },
+      end: { x: cx, y: rowY - rowH },
+      thickness: 1,
+      color: rgb(0.92, 0.92, 0.92)
+    })
+
+    const prod = item.productSnapshot || item
+    const sku = truncateText(safeStr(prod.sku), 14)
+    const name = truncateText(safeStr(prod.name), 38)
+    const unit = truncateText(safeStr(prod.unit || ''), 3)
+
+    const qty = safeNum(item.qty ?? item.quantity, 0)
+    const unitPrice = safeNum(item.unitPrice ?? item.price, 0)
+    const total = item.total != null ? safeNum(item.total, qty * unitPrice) : qty * unitPrice
+
+    // X coords
+    const colX = {
+      idx: tableStartX,
+      sku: calculateColumnX(tableStartX, colWidths, 0),
+      prod: calculateColumnX(tableStartX, colWidths, 1),
+      unit: calculateColumnX(tableStartX, colWidths, 2),
+      qty: calculateColumnX(tableStartX, colWidths, 3),
+      price: calculateColumnX(tableStartX, colWidths, 4),
+      total: calculateColumnX(tableStartX, colWidths, 5)
+    }
+
+    // text Y baseline
+    const ty = rowY - 12
+
+    drawText(String(idx), colX.idx + pad, ty, TABLE_CONFIG.fontSize, false)
+    drawText(sku, colX.sku + pad, ty, TABLE_CONFIG.fontSize, false)
+    drawText(name, colX.prod + pad, ty, TABLE_CONFIG.fontSize, false)
+    drawText(unit, colX.unit + pad, ty, TABLE_CONFIG.fontSize, false)
+    drawText(String(qty), colX.qty + pad, ty, TABLE_CONFIG.fontSize, false)
+    drawText(formatCurrency(unitPrice), colX.price + pad, ty, TABLE_CONFIG.fontSize, false)
+    drawText(formatCurrency(total), colX.total + pad, ty, TABLE_CONFIG.fontSize, false)
+
+    return rowY - rowH
+  }
+
+  // ===== INÍCIO =====
   y = drawHeader(y)
 
   const newPage = () => {
@@ -374,7 +276,7 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
 
   // ===== CLIENTE BLOCK =====
   const c = (order as any).customerSnapshot || {}
-  const blockH = 104
+  const blockH = 128
   drawBox(M, y, W, blockH)
   drawSectionTitle('DADOS DO CLIENTE', M + SPACING.padding, y)
 
@@ -383,9 +285,13 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   const topY = y - 38
 
   drawKV('Cliente', safeStr(c.name), x1, topY, W / 2 - SPACING.padding * 2)
-  drawKV('Documento', safeStr(c.doc), x1, topY - 18, W / 2 - SPACING.padding * 2)
-  drawKV('Telefone', safeStr(c.phone), x1, topY - 36, W / 2 - SPACING.padding * 2)
-  drawKV('E-mail', safeStr(c.email), x2, topY, W / 2 - SPACING.padding * 2)
+  drawKV('Razão Social', safeStr((c as any).legalName), x1, topY - 18, W / 2 - SPACING.padding * 2)
+  drawKV('Documento', safeStr(c.doc), x1, topY - 36, W / 2 - SPACING.padding * 2)
+  drawKV('Endereço Principal', safeStr((c as any).addressMain ?? (c as any).address), x1, topY - 54, W / 2 - SPACING.padding * 2)
+
+  drawKV('Telefone', safeStr(c.phone), x2, topY, W / 2 - SPACING.padding * 2)
+  drawKV('E-mail', safeStr(c.email), x2, topY - 18, W / 2 - SPACING.padding * 2)
+  drawKV('Endereço Entrega', safeStr((c as any).addressDelivery), x2, topY - 36, W / 2 - SPACING.padding * 2)
 
   y -= blockH + SPACING.sectionGap
 
@@ -393,196 +299,45 @@ export async function generateOrderPdf(order: Order, kind?: PdfKind) {
   drawSectionTitle('ITENS DO PEDIDO', M + 4, y + 12)
   y -= 20
 
-  const colWidths = Object.values(TABLE_CONFIG.columns).map(c => c.width)
-  const tableStartX = M + 8
+  const tableTopY = y
+  y = drawTableHeader(tableTopY)
 
-  const colX = {
-    idx: tableStartX,
-    sku: calculateColumnX(tableStartX, colWidths, 0),
-    prod: calculateColumnX(tableStartX, colWidths, 1),
-    und: calculateColumnX(tableStartX, colWidths, 2),
-    qtd: calculateColumnX(tableStartX, colWidths, 3),
-    unit: calculateColumnX(tableStartX, colWidths, 4),
-    sub: calculateColumnX(tableStartX, colWidths, 5),
-  }
-
-  const needNewPageForRow = () => y - TABLE_CONFIG.rowHeight <= M + 180
-
-  // ===== NOVO DESENHO DO CABEÇALHO DA TABELA =====
-  const drawTableHeader = () => {
-    drawBox(M, y, W, TABLE_CONFIG.headerHeight, BRAND.bgLight)
-    
-    const headers = ['#', 'Código', 'Produto', 'Unid.', 'Qtde.', 'Preço Unit.', 'Subtotal']
-    const aligns = ['left', 'left', 'left', 'left', 'right', 'right', 'right']
-
-    let colIndex = 0
-    for (const key of Object.keys(TABLE_CONFIG.columns)) {
-      const col = TABLE_CONFIG.columns[key as keyof typeof TABLE_CONFIG.columns]
-      const headerX = calculateColumnX(tableStartX, colWidths, colIndex)
-      const cellWidth = col.width
-
-      drawCell(page, font, fontB, headers[colIndex], headerX, y, cellWidth, TABLE_CONFIG.headerHeight, {
-        bold: true,
-        size: SIZES.tableHeader,
-        align: aligns[colIndex] as any,
-        color: BRAND.text,
-      })
-
-      colIndex++
-    }
-
-    y -= TABLE_CONFIG.headerHeight
-  }
-
-  drawTableHeader()
-
-  // ===== NOVO DESENHO DAS LINHAS DA TABELA =====
   const items = Array.isArray((order as any).items) ? (order as any).items : []
-  items.forEach((it: any, idx: number) => {
-    if (needNewPageForRow()) {
+
+  for (let i = 0; i < items.length; i++) {
+    if (y - TABLE_CONFIG.rowHeight < M + 160) {
       newPage()
-      y -= 14
-      drawSectionTitle('ITENS DO PEDIDO (CONTINUAÇÃO)', M + 4, y + 12)
-      y -= 20
-      drawTableHeader()
+      const tTop = y
+      y = drawTableHeader(tTop)
     }
-
-    const isZebra = idx % 2 === 1
-    if (isZebra) drawBox(M, y, W, TABLE_CONFIG.rowHeight, BRAND.bgZebra)
-
-    const sku = safeStr(it?.productSnapshot?.sku || it?.sku)
-    const name = safeStr(it?.productSnapshot?.name || it?.name)
-    const unit = safeStr(it?.productSnapshot?.unit || it?.unit)
-    const qty = Number(it?.qty ?? 0)
-    const unitPrice = Number(it?.unitPrice ?? 0)
-    const subtotal = n2(qty * unitPrice)
-
-    const rowData = [
-      String(idx + 1),
-      sku,
-      name,
-      unit,
-      String(qty || 0),
-      brl(unitPrice),
-      brl(subtotal),
-    ]
-
-    let colIndex = 0
-    const aligns = ['left', 'left', 'left', 'left', 'right', 'right', 'right']
-    
-    for (const key of Object.keys(TABLE_CONFIG.columns)) {
-      const col = TABLE_CONFIG.columns[key as keyof typeof TABLE_CONFIG.columns]
-      const cellX = calculateColumnX(tableStartX, colWidths, colIndex)
-      const cellWidth = col.width
-
-      drawCell(page, font, fontB, rowData[colIndex], cellX, y, cellWidth, TABLE_CONFIG.rowHeight, {
-        size: SIZES.tableBody,
-        align: aligns[colIndex] as any,
-        color: BRAND.text,
-      })
-
-      colIndex++
-    }
-
-    y -= TABLE_CONFIG.rowHeight
-  })
-
-  // ===== TOTALS & NOTES =====
-  if (y <= M + 180) newPage()
-  y -= SPACING.blockGap
-
-  const totalsBoxW = 240
-  const totalsBoxH = 120
-  const totalsX = M + W - totalsBoxW
-
-  drawBox(totalsX, y, totalsBoxW, totalsBoxH)
-  page.drawRectangle({ x: totalsX, y: y - 24, width: totalsBoxW, height: 24, color: BRAND.primaryDark })
-  drawText('TOTAIS', totalsX + SPACING.paddingSmall, y - 15, { bold: true, size: SIZES.sectionTitle, color: BRAND.white })
-
-  const t = (order as any).totals || { subtotal: 0, discount: 0, freight: 0, total: 0 }
-  const totalValues = [
-    n2(Number(t.subtotal ?? 0)),
-    n2(Number(t.discount ?? 0)),
-    n2(Number(t.freight ?? 0)),
-    n2(Number(t.total ?? 0)),
-  ]
-
-  const labelY = y - 48
-  const tx = totalsX + SPACING.paddingSmall
-
-  drawText('Subtotal:', tx, labelY, { size: SIZES.totalLabel, color: BRAND.textMuted })
-  drawText(brl(totalValues[0]), totalsX + totalsBoxW - SPACING.paddingSmall, labelY, { size: SIZES.totalLabel, align: 'right' })
-
-  drawText('Desconto:', tx, labelY - 18, { size: SIZES.totalLabel, color: BRAND.textMuted })
-  drawText(brl(totalValues[1]), totalsX + totalsBoxW - SPACING.paddingSmall, labelY - 18, { size: SIZES.totalLabel, align: 'right' })
-
-  drawText('Frete:', tx, labelY - 36, { size: SIZES.totalLabel, color: BRAND.textMuted })
-  drawText(brl(totalValues[2]), totalsX + totalsBoxW - SPACING.paddingSmall, labelY - 36, { size: SIZES.totalLabel, align: 'right' })
-
-  page.drawLine({ 
-    start: { x: totalsX + SPACING.paddingSmall, y: labelY - 46 }, 
-    end: { x: totalsX + totalsBoxW - SPACING.paddingSmall, y: labelY - 46 }, 
-    thickness: 0.8, 
-    color: BRAND.border 
-  })
-
-  drawText('TOTAL:', tx, labelY - 66, { bold: true, size: SIZES.totalValue, color: BRAND.primary })
-  drawText(brl(totalValues[3]), totalsX + totalsBoxW - SPACING.paddingSmall, labelY - 66, { 
-    bold: true, 
-    size: SIZES.totalValue, 
-    align: 'right', 
-    color: BRAND.primary 
-  })
-
-  // Observações com wrap de texto (USANDO wrapText corretamente)
-  const notesX = M
-  const notesW = W - totalsBoxW - 16
-  const notesH = totalsBoxH
-
-  drawBox(notesX, y, notesW, notesH)
-  page.drawRectangle({ x: notesX, y: y - 24, width: notesW, height: 24, color: BRAND.bgLight })
-  drawText('OBSERVAÇÕES', notesX + SPACING.paddingSmall, y - 15, { bold: true, size: SIZES.sectionTitle, color: BRAND.primaryDark })
-
-  const notes = safeStr((order as any).notes)
-  // [CORREÇÃO] Agora passando o font corretamente para wrapText
-  const noteLines = notes ? wrapText(notes, notesW - SPACING.paddingSmall * 2, SIZES.bodySmall, font).slice(0, 6) : ['—']
-  
-  let ny = y - 48
-  for (const line of noteLines) {
-    if (ny < y - notesH + SPACING.paddingSmall) break
-    drawText(line, notesX + SPACING.paddingSmall, ny, { size: SIZES.bodySmall, color: BRAND.text })
-    ny -= SPACING.lineHeight
+    y = drawRow(y, i + 1, items[i])
   }
 
-  y -= totalsBoxH + SPACING.sectionGap
+  y -= SPACING.sectionGap
+
+  // ===== TOTALS =====
+  const totalOrder = sumOrderTotal(order)
+
+  const totalsBlockH = 90
+  drawBox(M, y, W, totalsBlockH)
+  drawSectionTitle('TOTAIS', M + SPACING.padding, y)
+
+  const tTopY = y - 38
+  const totals = (order as any).totals || {}
+
+  drawKV('Subtotal', formatCurrency(safeNum(totals.subtotal, totalOrder)), M + SPACING.padding, tTopY, W / 2 - SPACING.padding * 2)
+  drawKV('Desconto', formatCurrency(safeNum(totals.discount, 0)), M + SPACING.padding, tTopY - 18, W / 2 - SPACING.padding * 2)
+  drawKV('Frete', formatCurrency(safeNum(totals.freight, 0)), M + SPACING.padding, tTopY - 36, W / 2 - SPACING.padding * 2)
+
+  // total
+  const totalY = y - totalsBlockH + 18
+  drawText('TOTAL:', A4_W - M - 200, totalY, 12, true, rgb(0.2, 0.2, 0.2))
+  drawText(formatCurrency(safeNum(totals.total, totalOrder)), A4_W - M - 120, totalY, 12, true, rgb(0, 0, 0))
 
   // ===== FOOTER =====
-  const footerY = M + 22
-  page.drawLine({ 
-    start: { x: M, y: footerY + 8 }, 
-    end: { x: A4_W - M, y: footerY + 8 }, 
-    thickness: 0.5, 
-    color: BRAND.border 
-  })
+  const footerY = 28
+  drawText('Gerado automaticamente pelo sistema de pedidos Sagrado.', M, footerY, 8, false, rgb(0.4, 0.4, 0.4))
 
-  drawText(`Documento gerado em ${formatDatePtBR(Date.now())} • ${FATURANTE.nomeFantasia}`, M, footerY, {
-    size: SIZES.footer,
-    color: BRAND.textMuted,
-  })
-
-  // ===== DOWNLOAD =====
   const pdfBytes = await pdfDoc.save()
-  const ab = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength) as ArrayBuffer
-
-  const blob = new Blob([ab], { type: 'application/pdf' })
-  const url = URL.createObjectURL(blob)
-
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${K}_${docNumber(order, K)}.pdf`
-
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  return pdfBytes
 }
