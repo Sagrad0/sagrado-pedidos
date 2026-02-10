@@ -85,16 +85,26 @@ export default function CustomersPage() {
   const onSubmit = async (values: CustomerFormValues) => {
     setSubmitError(null)
 
+    const trimOrEmpty = (v?: string) => (typeof v === 'string' ? v.trim() : '')
+    const legalName = trimOrEmpty(values.legalName) || undefined
+    const doc = trimOrEmpty(values.doc) || undefined
+    const email = trimOrEmpty(values.email) || undefined
+    const addressMain = trimOrEmpty(values.addressMain) || undefined
+    const addressDelivery = trimOrEmpty(values.addressDelivery) || undefined
+
+    // ✅ legado: só envia se tiver valor.
+    // Se não tiver, usa addressMain como compatibilidade (sem mandar undefined).
+    const legacyAddress = trimOrEmpty(values.address) || addressMain || undefined
+
     const payload: CustomerFormData = {
-      name: values.name,
-      legalName: values.legalName || undefined,
-      doc: values.doc || undefined,
-      phone: values.phone,
-      email: values.email || undefined,
-      addressMain: values.addressMain || undefined,
-      addressDelivery: values.addressDelivery || undefined,
-      // legado
-      address: values.address || undefined,
+      name: trimOrEmpty(values.name),
+      phone: trimOrEmpty(values.phone),
+      ...(legalName ? { legalName } : {}),
+      ...(doc ? { doc } : {}),
+      ...(email ? { email } : {}),
+      ...(addressMain ? { addressMain } : {}),
+      ...(addressDelivery ? { addressDelivery } : {}),
+      ...(legacyAddress ? { address: legacyAddress } : {}),
     }
 
     try {
