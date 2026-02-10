@@ -9,18 +9,31 @@ export interface BaseEntity {
 
 // Customer types
 export interface Customer extends BaseEntity {
+  /** Nome fantasia */
   name: string
+  /** Razão social */
+  legalName?: string
   doc?: string
   phone: string
   email?: string
+  /** Endereço principal (fiscal / cadastro) */
+  addressMain?: string
+  /** Endereço de entrega (preferencial) */
+  addressDelivery?: string
+  /** Campo legado (mantido para compatibilidade) */
   address?: string
+  /** Campo auxiliar para busca (lowercase) */
+  search?: string[]
 }
 
 export interface CustomerFormData {
   name: string
+  legalName?: string
   doc?: string
   phone: string
   email?: string
+  addressMain?: string
+  addressDelivery?: string
   address?: string
 }
 
@@ -71,14 +84,21 @@ export interface Order extends BaseEntity {
   status: OrderStatus
   customerId: string
   customerSnapshot: {
+    /** Nome fantasia */
     name: string
+    /** Razão social */
+    legalName?: string
     doc?: string
     phone: string
     email?: string
+    addressMain?: string
+    addressDelivery?: string
+    /** Campo legado */
     address?: string
   }
   items: OrderItem[]
   totals: OrderTotals
+  /** Observações do pedido */
   notes?: string
 }
 
