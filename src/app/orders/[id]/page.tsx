@@ -11,6 +11,18 @@ const currency = new Intl.NumberFormat('pt-BR', {
   currency: 'BRL'
 })
 
+// Converte Uint8Array -> base64 sem usar Blob/ArrayBuffer (evita conflito de typings no build)
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunkSize = 0x8000 // 32KB (seguro para fromCharCode)
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize)
+    // fromCharCode espera number[]; usamos spread em chunk pequeno pra não estourar stack
+    binary += String.fromCharCode(...Array.from(chunk))
+  }
+  return btoa(binary)
+}
+
 export default function OrderDetailsPage() {
   const params = useParams()
   const router = useRouter()
@@ -47,12 +59,24 @@ export default function OrderDetailsPage() {
 
     const bytes = await generateOrderPdf(order)
 
-    // ✅ FIX DEFINITIVO (TS/Next): evita ArrayBuffer/SharedArrayBuffer
-    // Blob aceita number[] sem briga de tipos.
-    const blob = new Blob([Array.from(bytes)], { type: 'application/pdf' })
+    // ✅ FIX (Vercel/Next TS): não usar Blob/ArrayBuffer/SharedArrayBuffer.
+    // Abrir/baixar via data URL base64.
+    const base64 = uint8ToBase64(bytes as Uint8Array)
+    const dataUrl = `data:application/pdf;base64,${base64}`
 
-    const url = URL.createObjectURL(blob)
-    window.open(url, '_blank')
+    const fileName = `pedido-${String((order as any).orderNumber || order.id || 'sagrado')}.pdf`
+
+    // Tenta abrir em nova aba (visualização). Se popup for bloqueado, faz download.
+    const opened = window.open(dataUrl, '_blank', 'noopener,noreferrer')
+    if (!opened) {
+      const a = document.createElement('a')
+      a.href = dataUrl
+      a.download = fileName
+      a.rel = 'noopener noreferrer'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    }
   }
 
   if (loading) {
@@ -158,9 +182,10 @@ export default function OrderDetailsPage() {
               </p>
             )}
 
-            {(((customer as any).addressMain) || customer.address) && (
+            {((customer as any).addressMain || customer.address) && (
               <p>
-                <strong>Endereço Principal:</strong> {(customer as any).addressMain || customer.address}
+                <strong>Endereço Principal:</strong>{' '}
+                {(customer as any).addressMain || customer.address}
               </p>
             )}
 
