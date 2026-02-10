@@ -44,8 +44,13 @@ export default function OrderDetailsPage() {
 
   const handleGeneratePdf = async () => {
     if (!order) return
+
     const bytes = await generateOrderPdf(order)
-    const blob = new Blob([bytes], { type: 'application/pdf' })
+
+    // ✅ FIX TS/Next: garantir ArrayBuffer "puro" (evita ArrayBufferLike/SharedArrayBuffer)
+    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    const blob = new Blob([ab], { type: 'application/pdf' })
+
     const url = URL.createObjectURL(blob)
     window.open(url, '_blank')
   }
