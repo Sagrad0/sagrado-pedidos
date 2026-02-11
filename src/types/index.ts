@@ -7,6 +7,19 @@ export interface BaseEntity {
   updatedAt: number
 }
 
+// Address types
+export interface Address {
+  /** Texto livre (para compatibilidade e referência) */
+  raw?: string
+  cep?: string
+  street?: string
+  number?: string
+  complement?: string
+  neighborhood?: string
+  city?: string
+  state?: string
+}
+
 // Customer types
 export interface Customer extends BaseEntity {
   /** Nome fantasia */
@@ -17,9 +30,9 @@ export interface Customer extends BaseEntity {
   phone: string
   email?: string
   /** Endereço principal (fiscal / cadastro) */
-  addressMain?: string
+  addressMain?: Address | string
   /** Endereço de entrega (preferencial) */
-  addressDelivery?: string
+  addressDelivery?: Address | string
   /** Campo legado (mantido para compatibilidade) */
   address?: string
   /** Campo auxiliar para busca (lowercase) */
@@ -32,8 +45,8 @@ export interface CustomerFormData {
   doc?: string
   phone: string
   email?: string
-  addressMain?: string
-  addressDelivery?: string
+  addressMain?: Address
+  addressDelivery?: Address
   address?: string
 }
 
@@ -80,7 +93,10 @@ export interface OrderTotals {
 }
 
 export interface Order extends BaseEntity {
-  orderNumber: string
+  /** Número do Pedido (PED-000001). Só existe após virar pedido. */
+  orderNumber?: string
+  /** Número do Orçamento (ORC-000001). Existe no orçamento e permanece após conversão. */
+  budgetNumber?: string
   status: OrderStatus
   customerId: string
   customerSnapshot: {
@@ -91,8 +107,11 @@ export interface Order extends BaseEntity {
     doc?: string
     phone: string
     email?: string
-    addressMain?: string
-    addressDelivery?: string
+
+    // ✅ Snapshot travado de endereços (pode ser string legado ou objeto v2)
+    addressMain?: Address | string
+    addressDelivery?: Address | string
+
     /** Campo legado */
     address?: string
   }
@@ -121,6 +140,4 @@ export interface WithChildren {
   children: React.ReactNode
 }
 
-export interface WithClassName {
-  className?: string
-}
+export interface
