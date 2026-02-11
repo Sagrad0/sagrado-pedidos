@@ -8,6 +8,7 @@
 
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 import type { Order } from '@/types'
+import { formatAddress } from '@/lib/address'
 
 // ===== CONSTANTES =====
 const A4_W = 595.28
@@ -81,213 +82,89 @@ const sumOrderTotal = (order: any) => {
   }, 0)
 }
 
-export async function generateOrderPdf(order: Order) {
+export async function generateOrderPdf(order: Order): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create()
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
-  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+  const page = pdfDoc.addPage([A4_W, A4_H])
 
-  let page = pdfDoc.addPage([A4_W, A4_H])
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+
   let y = A4_H - M
 
-  // ===== FUNÇÕES DE DESENHO =====
-  const drawText = (
-    text: string,
-    x: number,
-    y: number,
-    size = TABLE_CONFIG.fontSize,
-    isBold = false,
-    color = rgb(0, 0, 0)
-  ) => {
-    page.drawText(text, {
-      x,
-      y,
-      size,
-      font: isBold ? bold : font,
-      color,
-    })
-  }
+  // ===== HEADER =====
+  const title = (order.status === 'orcamento')
+    ? `ORÇAMENTO ${safeStr((order as any).budgetNumber || '')}`
+    : `PEDIDO ${safeStr((order as any).orderNumber || (order as any).budgetNumber || '')}`
 
-  const drawBox = (x: number, topY: number, w: number, h: number) => {
-    page.drawRectangle({
-      x,
-      y: topY - h,
-      width: w,
-      height: h,
-      borderColor: rgb(0.85, 0.85, 0.85),
-      borderWidth: 1,
-    })
-  }
+  page.drawText(title, {
+    x: M,
+    y,
+    size: 14,
+    font: fontBold,
+    color: rgb(0.1, 0.1, 0.1),
+  })
 
-  const drawSectionTitle = (title: string, x: number, topY: number) => {
-    drawText(title, x, topY - 16, 10, true)
+  y -= 18
+
+  const createdAt = safeStr((order as any).createdAt)
+  page.drawText(`Data: ${createdAt ? new Date(Number(createdAt)).toLocaleDateString('pt-BR') : '-'}`, {
+    x: M,
+    y,
+    size: 9,
+    font,
+    color: rgb(0.2, 0.2, 0.2),
+  })
+
+  y -= SPACING.headerGap
+
+  // ===== SECTIONS =====
+  const drawSectionTitle = (t: string, x: number, y: number) => {
+    page.drawText(t, { x, y, size: 9, font: fontBold, color: rgb(0.1, 0.1, 0.1) })
   }
 
   const drawKV = (k: string, v: string, x: number, y: number, maxW: number) => {
-    const key = `${k}: `
-    drawText(key, x, y, 8, true, rgb(0.2, 0.2, 0.2))
-
-    const maxChars = Math.floor(maxW / 4.2)
-    const val = truncateText(v, Math.max(10, maxChars))
-    drawText(val, x + 46, y, 8, false, rgb(0.1, 0.1, 0.1))
+    const label = `${k}: `
+    page.drawText(label, { x, y, size: 8, font: fontBold, color: rgb(0.2, 0.2, 0.2) })
+    page.drawText(truncateText(v, Math.max(10, Math.floor(maxW / 4))), {
+      x: x + fontBold.widthOfTextAtSize(label, 8),
+      y,
+      size: 8,
+      font,
+      color: rgb(0.1, 0.1, 0.1),
+      maxWidth: maxW,
+    })
   }
 
-  const drawHeader = (topY: number) => {
-    drawText('SAGRADO — PEDIDOS', M, topY - 16, 14, true)
-    drawText(`Nº: ${(order as any).orderNumber || ''}`, A4_W - M - 160, topY - 16, 10, true)
+  // ===== CLIENTE =====
+  drawSectionTitle('CLIENTE', M + 4, y)
+  y -= 10
 
-    const status = (order as any).status || ''
-    const statusLabel =
-      status === 'orcamento' ? 'ORÇAMENTO' : status === 'pedido' ? 'PEDIDO' : status.toUpperCase()
+  const c: any = (order as any).customerSnapshot || {}
 
-    drawText(`Status: ${statusLabel}`, A4_W - M - 160, topY - 32, 9, false)
-    drawText(`Data: ${new Date((order as any).createdAt || Date.now()).toLocaleString('pt-BR')}`, M, topY - 32, 9, false)
-
-    return topY - 52
-  }
-
-  const drawTableHeader = (topY: number) => {
-    const colWidths = Object.values(TABLE_CONFIG.columns).map((c) => c.width)
-    const tableStartX = M + 8
-
-    page.drawRectangle({
-      x: tableStartX,
-      y: topY - TABLE_CONFIG.headerHeight,
-      width: colWidths.reduce((a, b) => a + b, 0),
-      height: TABLE_CONFIG.headerHeight,
-      color: rgb(0.95, 0.95, 0.95),
-      borderColor: rgb(0.85, 0.85, 0.85),
-      borderWidth: 1,
-    })
-
-    let cx = tableStartX
-    for (let i = 0; i < colWidths.length; i++) {
-      page.drawLine({
-        start: { x: cx, y: topY },
-        end: { x: cx, y: topY - TABLE_CONFIG.headerHeight },
-        thickness: 1,
-        color: rgb(0.85, 0.85, 0.85),
-      })
-      cx += colWidths[i]
-    }
-    page.drawLine({
-      start: { x: cx, y: topY },
-      end: { x: cx, y: topY - TABLE_CONFIG.headerHeight },
-      thickness: 1,
-      color: rgb(0.85, 0.85, 0.85),
-    })
-
-    let x = tableStartX + TABLE_CONFIG.cellPadding
-    const cols = TABLE_CONFIG.columns
-    const labels = [
-      cols.idx.label,
-      cols.sku.label,
-      cols.prod.label,
-      cols.unit.label,
-      cols.qty.label,
-      cols.price.label,
-      cols.total.label,
-    ]
-
-    labels.forEach((lbl, i) => {
-      drawText(lbl, x, topY - 15, TABLE_CONFIG.headerFontSize, true, rgb(0.2, 0.2, 0.2))
-      x += colWidths[i]
-    })
-
-    return topY - TABLE_CONFIG.headerHeight
-  }
-
-  const drawRow = (rowY: number, idx: number, item: any) => {
-    const colWidths = Object.values(TABLE_CONFIG.columns).map((c) => c.width)
-    const tableStartX = M + 8
-    const rowH = TABLE_CONFIG.rowHeight
-    const pad = TABLE_CONFIG.cellPadding
-
-    page.drawRectangle({
-      x: tableStartX,
-      y: rowY - rowH,
-      width: colWidths.reduce((a, b) => a + b, 0),
-      height: rowH,
-      borderColor: rgb(0.9, 0.9, 0.9),
-      borderWidth: 1,
-    })
-
-    let cx = tableStartX
-    for (let i = 0; i < colWidths.length; i++) {
-      page.drawLine({
-        start: { x: cx, y: rowY },
-        end: { x: cx, y: rowY - rowH },
-        thickness: 1,
-        color: rgb(0.92, 0.92, 0.92),
-      })
-      cx += colWidths[i]
-    }
-    page.drawLine({
-      start: { x: cx, y: rowY },
-      end: { x: cx, y: rowY - rowH },
-      thickness: 1,
-      color: rgb(0.92, 0.92, 0.92),
-    })
-
-    const prod = item.productSnapshot || item
-    const sku = truncateText(safeStr(prod.sku), 14)
-    const name = truncateText(safeStr(prod.name), 38)
-    const unit = truncateText(safeStr(prod.unit || ''), 3)
-
-    const qty = safeNum(item.qty ?? item.quantity, 0)
-    const unitPrice = safeNum(item.unitPrice ?? item.price, 0)
-    const total = item.total != null ? safeNum(item.total, qty * unitPrice) : qty * unitPrice
-
-    const colX = {
-      idx: tableStartX,
-      sku: calculateColumnX(tableStartX, colWidths, 0),
-      prod: calculateColumnX(tableStartX, colWidths, 1),
-      unit: calculateColumnX(tableStartX, colWidths, 2),
-      qty: calculateColumnX(tableStartX, colWidths, 3),
-      price: calculateColumnX(tableStartX, colWidths, 4),
-      total: calculateColumnX(tableStartX, colWidths, 5),
-    }
-
-    const ty = rowY - 12
-
-    drawText(String(idx), colX.idx + pad, ty)
-    drawText(sku, colX.sku + pad, ty)
-    drawText(name, colX.prod + pad, ty)
-    drawText(unit, colX.unit + pad, ty)
-    drawText(String(qty), colX.qty + pad, ty)
-    drawText(formatCurrency(unitPrice), colX.price + pad, ty)
-    drawText(formatCurrency(total), colX.total + pad, ty)
-
-    return rowY - rowH
-  }
-
-  // ===== INÍCIO =====
-  y = drawHeader(y)
-
-  const newPage = () => {
-    page = pdfDoc.addPage([A4_W, A4_H])
-    y = A4_H - M
-    y = drawHeader(y)
-  }
-
-  // ===== CLIENTE BLOCK =====
-  const c = (order as any).customerSnapshot || {}
-  const blockH = 128
-
-  drawBox(M, y, W, blockH)
-  drawSectionTitle('DADOS DO CLIENTE', M + SPACING.padding, y)
+  const blockH = 70
+  // bloco cinza
+  page.drawRectangle({
+    x: M,
+    y: y - blockH,
+    width: W,
+    height: blockH,
+    color: rgb(0.97, 0.97, 0.97),
+    borderColor: rgb(0.9, 0.9, 0.9),
+    borderWidth: 1,
+  })
 
   const x1 = M + SPACING.padding
   const x2 = M + W / 2 + SPACING.padding
-  const topY = y - 38
+  const topY = y - 14
 
-  drawKV('Cliente', safeStr(c.name), x1, topY, W / 2 - SPACING.padding * 2)
+  drawKV('Nome', safeStr(c.name), x1, topY, W / 2 - SPACING.padding * 2)
   drawKV('Razão Social', safeStr((c as any).legalName), x1, topY - 18, W / 2 - SPACING.padding * 2)
   drawKV('Documento', safeStr(c.doc), x1, topY - 36, W / 2 - SPACING.padding * 2)
-  drawKV('Endereço Principal', safeStr((c as any).addressMain ?? (c as any).address), x1, topY - 54, W / 2 - SPACING.padding * 2)
+  drawKV('Endereço Principal', truncateText(formatAddress((c as any).addressMain ?? (c as any).address), 90), x1, topY - 54, W / 2 - SPACING.padding * 2)
 
   drawKV('Telefone', safeStr(c.phone), x2, topY, W / 2 - SPACING.padding * 2)
   drawKV('E-mail', safeStr(c.email), x2, topY - 18, W / 2 - SPACING.padding * 2)
-  drawKV('Endereço Entrega', safeStr((c as any).addressDelivery), x2, topY - 36, W / 2 - SPACING.padding * 2)
+  drawKV('Endereço Entrega', truncateText(formatAddress((c as any).addressDelivery), 90), x2, topY - 36, W / 2 - SPACING.padding * 2)
 
   y -= blockH + SPACING.sectionGap
 
@@ -295,42 +172,92 @@ export async function generateOrderPdf(order: Order) {
   drawSectionTitle('ITENS DO PEDIDO', M + 4, y + 12)
   y -= 20
 
+  const cols = Object.values(TABLE_CONFIG.columns)
+  const widths = cols.map((c) => c.width)
+  const startX = M
+
+  const drawCell = (text: string, colIndex: number, rowY: number, isHeader = false) => {
+    const x = calculateColumnX(startX, widths, colIndex)
+    const w = widths[colIndex]
+    const h = isHeader ? TABLE_CONFIG.headerHeight : TABLE_CONFIG.rowHeight
+
+    // cell border
+    page.drawRectangle({
+      x,
+      y: rowY - h,
+      width: w,
+      height: h,
+      borderColor: rgb(0.85, 0.85, 0.85),
+      borderWidth: 1,
+      color: isHeader ? rgb(0.94, 0.94, 0.94) : rgb(1, 1, 1),
+    })
+
+    const pad = TABLE_CONFIG.cellPadding
+    const maxChars = Math.max(3, Math.floor((w - pad * 2) / 4))
+
+    page.drawText(truncateText(text, maxChars), {
+      x: x + pad,
+      y: rowY - h + 6,
+      size: isHeader ? TABLE_CONFIG.headerFontSize : TABLE_CONFIG.fontSize,
+      font: isHeader ? fontBold : font,
+      color: rgb(0.15, 0.15, 0.15),
+      maxWidth: w - pad * 2,
+    })
+  }
+
+  const drawTableHeader = (rowY: number) => {
+    cols.forEach((c, idx) => drawCell(c.label, idx, rowY, true))
+    return rowY - TABLE_CONFIG.headerHeight
+  }
+
+  const drawTableRow = (rowY: number, row: string[]) => {
+    row.forEach((v, idx) => drawCell(v, idx, rowY, false))
+    return rowY - TABLE_CONFIG.rowHeight
+  }
+
   y = drawTableHeader(y)
 
   const items = Array.isArray((order as any).items) ? (order as any).items : []
+  items.forEach((it: any, index: number) => {
+    const qty = safeNum(it.qty ?? it.quantity, 0)
+    const unitPrice = safeNum(it.unitPrice ?? it.price, 0)
+    const lineTotal = it.total != null ? safeNum(it.total, qty * unitPrice) : qty * unitPrice
 
-  for (let i = 0; i < items.length; i++) {
-    if (y - TABLE_CONFIG.rowHeight < M + 160) {
-      newPage()
+    const row = [
+      String(index + 1),
+      safeStr(it.productSnapshot?.sku ?? it.sku),
+      safeStr(it.productSnapshot?.name ?? it.name),
+      safeStr(it.productSnapshot?.unit ?? it.unit),
+      String(qty),
+      formatCurrency(unitPrice),
+      formatCurrency(lineTotal),
+    ]
+
+    y = drawTableRow(y, row)
+
+    // quebra página
+    if (y < M + 140) {
+      const newPage = pdfDoc.addPage([A4_W, A4_H])
+      ;(page as any) = newPage
+      y = A4_H - M
       y = drawTableHeader(y)
     }
-    y = drawRow(y, i + 1, items[i])
-  }
+  })
 
-  y -= SPACING.sectionGap
+  // ===== TOTAL =====
+  y -= 18
+  drawSectionTitle('TOTAL', M + 4, y + 12)
+  y -= 8
 
-  // ===== TOTALS =====
-  const totalOrder = sumOrderTotal(order)
-  const totalsBlockH = 90
+  const total = sumOrderTotal(order)
+  page.drawText(`Total: ${formatCurrency(total)}`, {
+    x: M,
+    y,
+    size: 11,
+    font: fontBold,
+    color: rgb(0.1, 0.1, 0.1),
+  })
 
-  drawBox(M, y, W, totalsBlockH)
-  drawSectionTitle('TOTAIS', M + SPACING.padding, y)
-
-  const tTopY = y - 38
-  const totals = (order as any).totals || {}
-
-  drawKV('Subtotal', formatCurrency(safeNum(totals.subtotal, totalOrder)), M + SPACING.padding, tTopY, W / 2 - SPACING.padding * 2)
-  drawKV('Desconto', formatCurrency(safeNum(totals.discount, 0)), M + SPACING.padding, tTopY - 18, W / 2 - SPACING.padding * 2)
-  drawKV('Frete', formatCurrency(safeNum(totals.freight, 0)), M + SPACING.padding, tTopY - 36, W / 2 - SPACING.padding * 2)
-
-  const totalY = y - totalsBlockH + 18
-  drawText('TOTAL:', A4_W - M - 200, totalY, 12, true, rgb(0.2, 0.2, 0.2))
-  drawText(formatCurrency(safeNum(totals.total, totalOrder)), A4_W - M - 120, totalY, 12, true)
-
-  // ===== FOOTER =====
-  const footerY = 28
-  drawText('Gerado automaticamente pelo sistema de pedidos Sagrado.', M, footerY, 8, false, rgb(0.4, 0.4, 0.4))
-
-  const pdfBytes = await pdfDoc.save()
-  return pdfBytes
+  const bytes = await pdfDoc.save()
+  return bytes
 }
