@@ -8,6 +8,16 @@ import { createOrder } from '@/lib/db/orders'
 
 type OrderItemDraft = OrderFormData['items'][number]
 
+// Firestore não aceita valores `undefined` em nenhum campo.
+// Como payload vem de form/state, removemos chaves com undefined antes de salvar.
+function stripUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
+  const out: any = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v
+  }
+  return out
+}
+
 export default function NewOrderPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [products, setProducts] = useState<Product[]>([])
@@ -130,17 +140,18 @@ export default function NewOrderPage() {
         status: 'orcamento',
         customerId: selectedCustomerId,
         customerSnapshot: c
-          ? {
+          ? (stripUndefined({
               name: c.name,
               legalName: (c as any).legalName || undefined,
               doc: c.doc || undefined,
               phone: c.phone,
               email: c.email || undefined,
               addressMain: (c as any).addressMain || c.address || undefined,
-              addressDelivery: (deliveryAddress || (c as any).addressDelivery || '').trim() || undefined,
-              // legado
+              addressDelivery:
+                (deliveryAddress || (c as any).addressDelivery || '').trim() || undefined,
+              // legado (compatibilidade)
               address: c.address || undefined,
-            }
+            }) as any)
           : undefined,
         items: items.map((i) => ({
           productId: i.productId,
@@ -196,62 +207,42 @@ export default function NewOrderPage() {
                 className="form-input"
               />
 
-              {showCustomerDropdown && (
-                <div className="absolute z-20 mt-2 w-full max-h-64 overflow-auto no-scrollbar bg-white border rounded-lg shadow">
-                  {filteredCustomers.length === 0 && (
-                    <div className="p-3 text-sm text-gray-500">Nenhum cliente encontrado</div>
-                  )}
-
-                  {filteredCustomers.map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => {
-                        setSelectedCustomerId(c.id)
-                        setCustomerSearch(c.name)
-                        setShowCustomerDropdown(false)
-                      }}
-                      className="w-full text-left px-3 py-2 hover:bg-gray-50"
-                      type="button"
-                    >
-                      <div className="font-medium">{c.name}</div>
-                      <div className="text-xs text-gray-600">
-                        {[c.phone, c.doc, c.email].filter(Boolean).join(' • ')}
-                      </div>
-                      {(c as any).legalName && (
-                        <div className="text-xs text-gray-500 truncate">
-                          {(c as any).legalName}
+              {showCustomerDropdown && customerSearch.trim() && (
+                <div className="absolute z-20 mt-1 w-full rounded-lg border bg-white shadow">
+                  {filteredCustomers.length === 0 ? (
+                    <div className="p-3 text-sm text-gray-600">Nenhum cliente encontrado.</div>
+                  ) : (
+                    filteredCustomers.slice(0, 10).map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        className="w-full text-left p-3 hover:bg-gray-50"
+                        onClick={() => {
+                          setSelectedCustomerId(c.id)
+                          setCustomerSearch(c.name)
+                          setShowCustomerDropdown(false)
+                        }}
+                      >
+                        <div className="font-semibold text-gray-900">{c.name}</div>
+                        <div className="text-xs text-gray-600">
+                          {[c.phone, c.doc].filter(Boolean).join(' • ')}
                         </div>
-                      )}
-                    </button>
-                  ))}
+                      </button>
+                    ))
+                  )}
                 </div>
               )}
             </div>
 
             {selectedCustomer && (
-              <div className="mt-3 text-sm text-gray-700 space-y-1">
-                <div>
-                  <strong>Telefone:</strong> {selectedCustomer.phone}
-                </div>
-
+              <div className="mt-4 text-sm text-gray-800 space-y-1">
+                <div><strong>Cliente:</strong> {selectedCustomer.name}</div>
                 {(selectedCustomer as any).legalName && (
-                  <div>
-                    <strong>Razão Social:</strong> {(selectedCustomer as any).legalName}
-                  </div>
+                  <div><strong>Razão Social:</strong> {(selectedCustomer as any).legalName}</div>
                 )}
-
-                {selectedCustomer.doc && (
-                  <div>
-                    <strong>CPF/CNPJ:</strong> {selectedCustomer.doc}
-                  </div>
-                )}
-
-                {selectedCustomer.email && (
-                  <div>
-                    <strong>Email:</strong> {selectedCustomer.email}
-                  </div>
-                )}
-
+                <div><strong>Telefone:</strong> {selectedCustomer.phone}</div>
+                {selectedCustomer.doc && <div><strong>CPF/CNPJ:</strong> {selectedCustomer.doc}</div>}
+                {selectedCustomer.email && <div><strong>Email:</strong> {selectedCustomer.email}</div>}
                 {((selectedCustomer as any).addressMain || selectedCustomer.address) && (
                   <div>
                     <strong>Endereço Principal:</strong>{' '}
@@ -259,20 +250,19 @@ export default function NewOrderPage() {
                   </div>
                 )}
 
-                {/* ✅ NOVO: Endereço de Entrega editável no pedido */}
-                <div className="mt-3">
-                  <label className="block text-xs font-semibold text-gray-600 mb-1">
-                    Endereço de Entrega (vai no pedido/PDF)
-                  </label>
+                <div className="pt-2">
+                  <div className="text-xs text-gray-600 mb-1">
+                    <strong>Endereço de Entrega (vai no pedido/PDF)</strong>
+                  </div>
                   <input
                     className="form-input"
                     value={deliveryAddress}
                     onChange={(e) => setDeliveryAddress(e.target.value)}
-                    placeholder="Ex: Rua X, nº Y, Bairro, Cidade/UF"
+                    placeholder="Digite o endereço de entrega..."
                   />
-                  <p className="mt-1 text-xs text-gray-500">
+                  <div className="text-xs text-gray-500 mt-1">
                     Se você editar aqui, essa versão vai no pedido mesmo que o cadastro do cliente esteja diferente.
-                  </p>
+                  </div>
                 </div>
               </div>
             )}
@@ -295,79 +285,75 @@ export default function NewOrderPage() {
                 className="form-input"
               />
 
-              {showProductDropdown && (
-                <div className="absolute z-20 mt-2 w-full max-h-64 overflow-auto no-scrollbar bg-white border rounded-lg shadow">
-                  {filteredProducts.length === 0 && (
-                    <div className="p-3 text-sm text-gray-500">Nenhum produto encontrado</div>
+              {showProductDropdown && productSearch.trim() && (
+                <div className="absolute z-20 mt-1 w-full rounded-lg border bg-white shadow">
+                  {filteredProducts.length === 0 ? (
+                    <div className="p-3 text-sm text-gray-600">Nenhum produto encontrado.</div>
+                  ) : (
+                    filteredProducts.slice(0, 10).map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="w-full text-left p-3 hover:bg-gray-50"
+                        onClick={() => {
+                          addItem(p)
+                          setProductSearch('')
+                          setShowProductDropdown(false)
+                        }}
+                      >
+                        <div className="font-semibold text-gray-900">{p.sku} — {p.name}</div>
+                        <div className="text-xs text-gray-600">{p.unit}</div>
+                      </button>
+                    ))
                   )}
-
-                  {filteredProducts.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => {
-                        addItem(p)
-                        setProductSearch('')
-                        setShowProductDropdown(false)
-                      }}
-                      className="w-full text-left px-3 py-2 hover:bg-gray-50"
-                      type="button"
-                    >
-                      <div className="font-medium">
-                        {p.sku} — {p.name}
-                      </div>
-                      <div className="text-xs text-gray-600">
-                        {p.unit}
-                        {p.weight ? ` • ${p.weight}g` : ''} • R$ {p.price.toFixed(2)}
-                      </div>
-                    </button>
-                  ))}
                 </div>
               )}
             </div>
 
-            <div className="mt-4 overflow-x-auto -mx-4 sm:mx-0">
-              <table className="min-w-full">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Produto</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Qtd</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Preço Unit.</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Ações</th>
+            <div className="mt-4 overflow-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b">
+                    <th className="py-2 pr-3">Produto</th>
+                    <th className="py-2 pr-3">Qtd</th>
+                    <th className="py-2 pr-3">Preço Unit.</th>
+                    <th className="py-2 pr-3">Total</th>
+                    <th className="py-2 pr-3">Ações</th>
                   </tr>
                 </thead>
-
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {items.map((item) => (
-                    <tr key={item.productId}>
-                      <td className="px-4 py-2 text-sm text-gray-900">
-                        {item.productSnapshot?.sku} - {item.productSnapshot?.name}
-                      </td>
-
-                      <td className="px-4 py-2">
-                        <input
-                          type="number"
-                          min={1}
-                          value={item.qty}
-                          onChange={(e) => setItemQty(item.productId, Number(e.target.value))}
-                          className="w-20 form-input"
-                        />
-                      </td>
-
-                      <td className="px-4 py-2">R$ {item.unitPrice.toFixed(2)}</td>
-                      <td className="px-4 py-2">R$ {(item.unitPrice * item.qty).toFixed(2)}</td>
-
-                      <td className="px-4 py-2">
-                        <button
-                          onClick={() => removeItem(item.productId)}
-                          className="text-red-600 hover:text-red-800"
-                          type="button"
-                        >
-                          Remover
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                <tbody>
+                  {items.map((i) => {
+                    const lineTotal = i.qty * i.unitPrice
+                    return (
+                      <tr key={i.productId} className="border-b">
+                        <td className="py-2 pr-3">
+                          <div className="font-semibold">
+                            {i.productSnapshot?.sku} — {i.productSnapshot?.name}
+                          </div>
+                        </td>
+                        <td className="py-2 pr-3">
+                          <input
+                            type="number"
+                            min={1}
+                            className="form-input w-24"
+                            value={i.qty}
+                            onChange={(e) => setItemQty(i.productId, Number(e.target.value))}
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          {i.unitPrice.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                        </td>
+                        <td className="py-2 pr-3">
+                          {lineTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                        </td>
+                        <td className="py-2 pr-3">
+                          <button className="text-red-600 hover:underline" onClick={() => removeItem(i.productId)}>
+                            Remover
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -382,34 +368,29 @@ export default function NewOrderPage() {
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <span>Subtotal:</span>
-                <span>R$ {totals.subtotal.toFixed(2)}</span>
+                <span>
+                  {totals.subtotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                </span>
               </div>
-
               <div className="flex justify-between">
                 <span>Frete:</span>
-                <span>R$ {totals.freight.toFixed(2)}</span>
+                <span>
+                  {totals.freight.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                </span>
               </div>
-
-              <div className="flex justify-between font-semibold text-gray-900">
+              <div className="flex justify-between font-semibold pt-2 border-t">
                 <span>Total:</span>
-                <span>R$ {totals.total.toFixed(2)}</span>
+                <span>
+                  {totals.total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                </span>
               </div>
             </div>
           </div>
 
-          <div className="card p-6">
-            <button onClick={handleSubmit} disabled={saving} className="btn btn-primary w-full">
-              {saving ? 'Salvando...' : 'Salvar Pedido'}
-            </button>
-          </div>
+          <button onClick={handleSubmit} disabled={saving} className="btn btn-primary w-full">
+            {saving ? 'Salvando...' : 'Salvar Pedido'}
+          </button>
         </div>
-      </div>
-
-      {/* Mobile sticky actions */}
-      <div className="md:hidden sticky bottom-0 inset-x-0 bg-white/95 backdrop-blur border-t p-3">
-        <button onClick={handleSubmit} disabled={saving} className="btn btn-primary w-full">
-          {saving ? 'Salvando...' : 'Salvar Pedido'}
-        </button>
       </div>
     </div>
   )
