@@ -10,9 +10,10 @@ import {
   orderBy,
 } from 'firebase/firestore'
 import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
+import { formatAddress, toAddressObject } from '@/lib/address'
 import type { Customer } from '@/types'
 
-const COLLECTION = 'customers'
+const COLLECTION = process.env.NEXT_PUBLIC_CUSTOMERS_COLLECTION || 'customers'
 
 function normalizeDigits(v: string) {
   return (v || '').replace(/\D+/g, '')
@@ -35,8 +36,8 @@ function buildSearchTokens(c: Partial<Customer>): string[] {
   push(c.phone)
   push(c.doc)
   push(c.email)
-  push(c.addressMain)
-  push(c.addressDelivery)
+  push(formatAddress((c as any).addressMain))
+  push(formatAddress((c as any).addressDelivery))
   // campo legado (mantido no tipo Customer para compatibilidade)
   push(c.address)
 
@@ -102,6 +103,9 @@ export async function createCustomer(data: Partial<Customer>) {
       updatedAt: now,
     } as any) as Partial<Customer>
 
+    ;(payload as any).addressMain = toAddressObject((payload as any).addressMain)
+    ;(payload as any).addressDelivery = toAddressObject((payload as any).addressDelivery)
+
     payload.search = buildSearchTokens(payload)
 
     const ref = await addDoc(collection(db, COLLECTION), payload)
@@ -125,6 +129,9 @@ export async function updateCustomer(id: string, data: Partial<Customer>) {
       ...data,
       updatedAt: Date.now(),
     } as any) as Partial<Customer>
+
+    ;(payload as any).addressMain = toAddressObject((payload as any).addressMain)
+    ;(payload as any).addressDelivery = toAddressObject((payload as any).addressDelivery)
 
     payload.search = buildSearchTokens(payload)
 
