@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 // Base interface for common fields
 export interface BaseEntity {
   id: string
@@ -137,7 +139,5 @@ export interface OrderCounter {
 
 // Component prop types
 export interface WithChildren {
-  children: React.ReactNode
+  children: ReactNode
 }
-
-export interface
