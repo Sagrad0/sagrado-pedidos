@@ -26,7 +26,6 @@ function buildSearchTokens(c: Partial<Customer>): string[] {
     const s = String(v).trim().toLowerCase()
     if (!s) return
     tokens.push(s)
-    // também indexa somente dígitos (útil para doc/telefone)
     const digits = normalizeDigits(s)
     if (digits && digits !== s) tokens.push(digits)
   }
@@ -38,22 +37,29 @@ function buildSearchTokens(c: Partial<Customer>): string[] {
   push(c.email)
   push(formatAddress((c as any).addressMain))
   push(formatAddress((c as any).addressDelivery))
-  // campo legado (mantido no tipo Customer para compatibilidade)
   push(c.address)
 
-  // remove duplicados
   return Array.from(new Set(tokens))
 }
 
 // Firestore NÃO aceita valores `undefined` em nenhum campo.
-// Como o payload vem de formulários (Partial<Customer>), é comum existir chave com undefined.
-// Sanitizamos removendo essas chaves antes de addDoc/updateDoc.
 function stripUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
   const out: any = {}
   for (const [k, v] of Object.entries(obj)) {
     if (v !== undefined) out[k] = v
   }
   return out
+}
+
+// ✅ Não deixe addressMain/addressDelivery virarem "chave com undefined"
+function applyAddressFields(payload: any) {
+  const am = toAddressObject(payload.addressMain)
+  if (am) payload.addressMain = am
+  else delete payload.addressMain
+
+  const ad = toAddressObject(payload.addressDelivery)
+  if (ad) payload.addressDelivery = ad
+  else delete payload.addressDelivery
 }
 
 export async function getAllCustomers(): Promise<Customer[]> {
@@ -73,7 +79,6 @@ export async function searchCustomers(term: string): Promise<Customer[]> {
   const t = (term || '').trim().toLowerCase()
   const tDigits = normalizeDigits(t)
 
-  // tenta buscar pelo termo bruto; se for algo numérico, tenta também pelos dígitos
   const q1 = query(collection(db, COLLECTION), where('search', 'array-contains', t))
   const snap1 = await getDocs(q1)
   const res1 = snap1.docs.map((d) => ({ id: d.id, ...d.data() })) as Customer[]
@@ -84,7 +89,6 @@ export async function searchCustomers(term: string): Promise<Customer[]> {
   const snap2 = await getDocs(q2)
   const res2 = snap2.docs.map((d) => ({ id: d.id, ...d.data() })) as Customer[]
 
-  // merge unique by id
   const map = new Map<string, Customer>()
   ;[...res1, ...res2].forEach((c) => map.set(c.id, c))
   return Array.from(map.values())
@@ -97,14 +101,14 @@ export async function createCustomer(data: Partial<Customer>) {
   try {
     const now = Date.now()
 
-    const payload = stripUndefined({
+    const payload: any = stripUndefined({
       ...data,
       createdAt: typeof data.createdAt === 'number' ? data.createdAt : now,
       updatedAt: now,
-    } as any) as Partial<Customer>
+    } as any)
 
-    ;(payload as any).addressMain = toAddressObject((payload as any).addressMain)
-    ;(payload as any).addressDelivery = toAddressObject((payload as any).addressDelivery)
+    // ✅ aplica e remove campos vazios (nunca deixa undefined)
+    applyAddressFields(payload)
 
     payload.search = buildSearchTokens(payload)
 
@@ -125,13 +129,13 @@ export async function updateCustomer(id: string, data: Partial<Customer>) {
   const db = getDbInstance()
 
   try {
-    const payload = stripUndefined({
+    const payload: any = stripUndefined({
       ...data,
       updatedAt: Date.now(),
-    } as any) as Partial<Customer>
+    } as any)
 
-    ;(payload as any).addressMain = toAddressObject((payload as any).addressMain)
-    ;(payload as any).addressDelivery = toAddressObject((payload as any).addressDelivery)
+    // ✅ aplica e remove campos vazios (nunca deixa undefined)
+    applyAddressFields(payload)
 
     payload.search = buildSearchTokens(payload)
 
