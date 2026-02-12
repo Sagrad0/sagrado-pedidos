@@ -5,6 +5,7 @@ import { OrderFormData, Product, Customer } from '@/types'
 import { getAllCustomers } from '@/lib/db/customers'
 import { getAllProducts } from '@/lib/db/products'
 import { createOrder } from '@/lib/db/orders'
+import { incrementCounter } from '@/lib/db/counters'
 import type { Address } from '@/types'
 import { formatAddress, toAddressObject } from '@/lib/address'
 
@@ -26,112 +27,52 @@ function brl(v: number) {
 export default function NewOrderPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [products, setProducts] = useState<Product[]>([])
-  const [items, setItems] = useState<OrderItemDraft[]>([])
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string>('')
-
-  const [deliveryAddress, setDeliveryAddress] = useState<Address | undefined>(undefined)
+  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  const [customerSearch, setCustomerSearch] = useState('')
-  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false)
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>('')
+  const selectedCustomer = useMemo(
+    () => customers.find((c) => c.id === selectedCustomerId) || null,
+    [customers, selectedCustomerId],
+  )
 
-  const [productSearch, setProductSearch] = useState('')
-  const [showProductDropdown, setShowProductDropdown] = useState(false)
+  const [deliveryAddress, setDeliveryAddress] = useState<Address | null>(null)
+
+  const [items, setItems] = useState<OrderItemDraft[]>([])
+  const [productPickerId, setProductPickerId] = useState<string>('')
 
   useEffect(() => {
-    async function fetchData() {
-      const cs = await getAllCustomers()
-      const ps = await getAllProducts()
-      setCustomers(cs as Customer[])
-      setProducts(ps as Product[])
+    let mounted = true
+    const run = async () => {
+      setLoading(true)
+      try {
+        const [cs, ps] = await Promise.all([getAllCustomers(), getAllProducts()])
+        if (!mounted) return
+        setCustomers(cs)
+        setProducts(ps)
+      } finally {
+        if (mounted) setLoading(false)
+      }
     }
-    fetchData()
+    run()
+    return () => {
+      mounted = false
+    }
   }, [])
 
-  const filteredCustomers = useMemo(() => {
-    const t = customerSearch.toLowerCase()
-    return customers.filter((c) =>
-      [
-        c.name,
-        (c as any).legalName,
-        c.phone,
-        c.doc,
-        c.email,
-        formatAddress((c as any).addressMain),
-        formatAddress((c as any).addressDelivery),
-        c.address,
-      ]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(t))
-    )
-  }, [customers, customerSearch])
-
-  const filteredProducts = useMemo(() => {
-    const t = productSearch.toLowerCase()
-    return products.filter((p) =>
-      [p.name, p.sku].some((v) => String(v).toLowerCase().includes(t))
-    )
-  }, [products, productSearch])
-
-  const selectedCustomer = useMemo(() => {
-    return customers.find((c) => c.id === selectedCustomerId) || null
-  }, [customers, selectedCustomerId])
-
   useEffect(() => {
-    if (!selectedCustomer) return
-
+    // quando troca cliente, reseta endereço de entrega para o principal (se existir)
+    if (!selectedCustomer) {
+      setDeliveryAddress(null)
+      return
+    }
     const addr =
-      (selectedCustomer as any).addressDelivery ||
       (selectedCustomer as any).addressMain ||
-      selectedCustomer.address ||
-      ''
-
-    setDeliveryAddress(toAddressObject(addr))
-  }, [selectedCustomerId])
-
-  const addItem = (product: Product) => {
-    setItems((prev) => {
-      const exists = prev.find((i) => i.productId === product.id)
-      if (exists) {
-        return prev.map((i) =>
-          i.productId === product.id ? { ...i, qty: i.qty + 1 } : i
-        )
-      }
-
-      const draft: OrderItemDraft = {
-        productId: product.id,
-        productSnapshot: {
-          sku: product.sku,
-          name: product.name,
-          unit: product.unit,
-          weight: product.weight,
-        },
-        qty: 1,
-        unitPrice: product.price,
-      }
-
-      return [...prev, draft]
-    })
-
-    setProductSearch('')
-    setShowProductDropdown(false)
-  }
-
-  const removeItem = (productId: string) => {
-    setItems((prev) => prev.filter((i) => i.productId !== productId))
-  }
-
-  const updateQty = (productId: string, qty: number) => {
-    setItems((prev) =>
-      prev.map((i) => (i.productId === productId ? { ...i, qty } : i))
-    )
-  }
-
-  const updatePrice = (productId: string, unitPrice: number) => {
-    setItems((prev) =>
-      prev.map((i) => (i.productId === productId ? { ...i, unitPrice } : i))
-    )
-  }
+      (selectedCustomer as any).address ||
+      (selectedCustomer as any).addressDelivery ||
+      null
+    setDeliveryAddress(addr ? toAddressObject(addr) : null)
+  }, [selectedCustomer])
 
   const totals = useMemo(() => {
     const subtotal = items.reduce((acc, i) => acc + i.qty * i.unitPrice, 0)
@@ -148,8 +89,12 @@ export default function NewOrderPage() {
     try {
       const c = selectedCustomer
 
+      const seq = await incrementCounter('budget_seq')
+      const budgetNumber = `ORC-${String(seq).padStart(6, '0')}`
+
       const payload: any = {
         status: 'orcamento',
+        budgetNumber,
         customerId: selectedCustomerId,
         customerSnapshot: c
           ? (stripUndefined({
@@ -188,301 +133,223 @@ export default function NewOrderPage() {
     }
   }
 
+  const addItem = () => {
+    if (!productPickerId) return
+    const p = products.find((x) => x.id === productPickerId)
+    if (!p) return
+
+    setItems((prev) => {
+      // se já existe, incrementa qty
+      const ix = prev.findIndex((i) => i.productId === p.id)
+      if (ix >= 0) {
+        const copy = [...prev]
+        copy[ix] = { ...copy[ix], qty: (copy[ix].qty || 0) + 1 }
+        return copy
+      }
+      return [
+        ...prev,
+        {
+          productId: p.id!,
+          productSnapshot: {
+            name: p.name,
+            sku: (p as any).sku || '',
+            unit: (p as any).unit || '',
+          },
+          qty: 1,
+          unitPrice: Number((p as any).price || 0),
+        },
+      ]
+    })
+
+    setProductPickerId('')
+  }
+
+  const removeItem = (productId: string) => {
+    setItems((prev) => prev.filter((i) => i.productId !== productId))
+  }
+
+  const updateQty = (productId: string, qty: number) => {
+    setItems((prev) =>
+      prev.map((i) => (i.productId === productId ? { ...i, qty: Math.max(1, Math.trunc(qty || 1)) } : i)),
+    )
+  }
+
+  const updateUnitPrice = (productId: string, unitPrice: number) => {
+    setItems((prev) => prev.map((i) => (i.productId === productId ? { ...i, unitPrice: Number(unitPrice || 0) } : i)))
+  }
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="text-sm text-slate-500">Carregando…</div>
+      </div>
+    )
+  }
+
   return (
-    <div className="page">
-      <div className="page-header">
+    <div className="p-6">
+      <div className="mb-4 flex items-center justify-between">
         <div>
-          <h1 className="page-title">Novo Pedido</h1>
-          <div className="page-subtitle">Escolha cliente, adicione itens, salve o orçamento.</div>
+          <div className="text-xs text-slate-500">Pedidos</div>
+          <div className="text-2xl font-extrabold">Novo orçamento</div>
         </div>
 
-        <button onClick={handleSubmit} disabled={saving} className="btn btn-primary">
-          {saving ? 'Salvando...' : 'Salvar Orçamento'}
+        <button
+          onClick={handleSubmit}
+          disabled={saving}
+          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+        >
+          {saving ? 'Salvando…' : 'Salvar orçamento'}
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Cliente */}
-        <div className="card">
-          <div className="card-header">
-            <div className="card-title">Cliente</div>
-            {selectedCustomer ? <span className="pill pill-green">Selecionado</span> : <span className="pill pill-gray">Obrigatório</span>}
-          </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* coluna esquerda */}
+        <div className="lg:col-span-1">
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="text-sm font-semibold">Cliente</div>
 
-          <div className="card-body space-y-3">
-            <div className="relative">
-              <input
-                className="form-input"
-                value={customerSearch}
-                onChange={(e) => {
-                  setCustomerSearch(e.target.value)
-                  setShowCustomerDropdown(true)
-                }}
-                onFocus={() => setShowCustomerDropdown(true)}
-                placeholder="Buscar cliente..."
-              />
-
-              {showCustomerDropdown && (
-                <div className="dropdown">
-                  {filteredCustomers.slice(0, 20).map((c) => (
-                    <button
-                      type="button"
-                      key={c.id}
-                      className="dropdown-item"
-                      onClick={() => {
-                        setSelectedCustomerId(c.id)
-                        setCustomerSearch(c.name)
-                        setShowCustomerDropdown(false)
-                      }}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="font-semibold text-slate-900 truncate">{c.name}</div>
-                          <div className="text-xs text-slate-500 truncate">
-                            {c.phone} {c.doc ? `• ${c.doc}` : ''}
-                          </div>
-                        </div>
-                        <span className="pill pill-gray">cliente</span>
-                      </div>
-                    </button>
-                  ))}
-
-                  {filteredCustomers.length === 0 && (
-                    <div className="dropdown-empty">Nenhum cliente encontrado.</div>
-                  )}
-                </div>
-              )}
+            <div className="mt-2">
+              <select
+                value={selectedCustomerId}
+                onChange={(e) => setSelectedCustomerId(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+              >
+                <option value="">Selecione…</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {selectedCustomer && (
-              <div className="space-y-3">
-                <div className="card border-slate-100 shadow-none">
-                  <div className="card-body space-y-1">
-                    <div className="text-sm">
-                      <span className="muted">Telefone:</span> <strong>{selectedCustomer.phone}</strong>
-                    </div>
-                    {selectedCustomer.doc && (
-                      <div className="text-sm">
-                        <span className="muted">Doc:</span> <strong>{selectedCustomer.doc}</strong>
-                      </div>
-                    )}
-                    {selectedCustomer.email && (
-                      <div className="text-sm">
-                        <span className="muted">E-mail:</span> <strong>{selectedCustomer.email}</strong>
-                      </div>
-                    )}
-                  </div>
-                </div>
+              <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm">
+                <div className="font-semibold">{selectedCustomer.name}</div>
+                {selectedCustomer.phone && <div className="text-slate-600">{selectedCustomer.phone}</div>}
+                {selectedCustomer.email && <div className="text-slate-600">{selectedCustomer.email}</div>}
 
-                <div>
-                  <div className="text-sm font-semibold text-slate-900 mb-2">Endereço de Entrega (vai no pedido/PDF)</div>
+                <div className="mt-2 text-xs font-semibold text-slate-500">Endereço de entrega</div>
+                <div className="mt-1 text-slate-700">{deliveryAddress ? formatAddress(deliveryAddress) : '—'}</div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <input
-                      className="form-input form-input-sm"
-                      value={deliveryAddress?.cep || ''}
-                      onChange={(e) => setDeliveryAddress((prev) => ({ ...(prev || {}), cep: e.target.value }))}
-                      placeholder="CEP"
-                    />
-                    <input
-                      className="form-input form-input-sm sm:col-span-2"
-                      value={deliveryAddress?.street || ''}
-                      onChange={(e) => setDeliveryAddress((prev) => ({ ...(prev || {}), street: e.target.value }))}
-                      placeholder="Rua / Av."
-                    />
-                    <input
-                      className="form-input form-input-sm"
-                      value={deliveryAddress?.number || ''}
-                      onChange={(e) => setDeliveryAddress((prev) => ({ ...(prev || {}), number: e.target.value }))}
-                      placeholder="Número"
-                    />
-                    <input
-                      className="form-input form-input-sm sm:col-span-2"
-                      value={deliveryAddress?.complement || ''}
-                      onChange={(e) => setDeliveryAddress((prev) => ({ ...(prev || {}), complement: e.target.value }))}
-                      placeholder="Complemento"
-                    />
-                    <input
-                      className="form-input form-input-sm"
-                      value={deliveryAddress?.neighborhood || ''}
-                      onChange={(e) => setDeliveryAddress((prev) => ({ ...(prev || {}), neighborhood: e.target.value }))}
-                      placeholder="Bairro"
-                    />
-                    <input
-                      className="form-input form-input-sm"
-                      value={deliveryAddress?.city || ''}
-                      onChange={(e) => setDeliveryAddress((prev) => ({ ...(prev || {}), city: e.target.value }))}
-                      placeholder="Cidade"
-                    />
-                    <input
-                      className="form-input form-input-sm"
-                      value={deliveryAddress?.state || ''}
-                      onChange={(e) => setDeliveryAddress((prev) => ({ ...(prev || {}), state: e.target.value }))}
-                      placeholder="UF"
-                    />
-                    <input
-                      className="form-input form-input-sm sm:col-span-3"
-                      value={deliveryAddress?.raw || ''}
-                      onChange={(e) => setDeliveryAddress((prev) => ({ ...(prev || {}), raw: e.target.value }))}
-                      placeholder="Texto livre (opcional)"
-                    />
-                  </div>
-
-                  <div className="mt-2 text-xs text-slate-500">
-                    Preview: <strong>{formatAddress(deliveryAddress)}</strong>
-                  </div>
-                </div>
+                <button
+                  onClick={() => {
+                    // mantém simples: usa endereço do cliente como entrega
+                    const addr =
+                      (selectedCustomer as any).addressMain ||
+                      (selectedCustomer as any).address ||
+                      (selectedCustomer as any).addressDelivery ||
+                      null
+                    setDeliveryAddress(addr ? toAddressObject(addr) : null)
+                  }}
+                  className="mt-2 text-xs font-semibold text-slate-700 underline"
+                >
+                  Usar endereço principal
+                </button>
               </div>
             )}
           </div>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+            <div className="text-sm font-semibold">Adicionar item</div>
+
+            <div className="mt-2 flex gap-2">
+              <select
+                value={productPickerId}
+                onChange={(e) => setProductPickerId(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+              >
+                <option value="">Selecione um produto…</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                onClick={addItem}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                +
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* Produtos */}
-        <div className="card">
-          <div className="card-header">
-            <div className="card-title">Produtos</div>
-            <span className="pill pill-blue">Adicionar no pedido</span>
-          </div>
-
-          <div className="card-body space-y-3">
-            <div className="relative">
-              <input
-                className="form-input"
-                value={productSearch}
-                onChange={(e) => {
-                  setProductSearch(e.target.value)
-                  setShowProductDropdown(true)
-                }}
-                onFocus={() => setShowProductDropdown(true)}
-                placeholder="Buscar produto..."
-              />
-
-              {showProductDropdown && (
-                <div className="dropdown">
-                  {filteredProducts.slice(0, 20).map((p) => (
-                    <button
-                      type="button"
-                      key={p.id}
-                      className="dropdown-item"
-                      onClick={() => addItem(p)}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="font-semibold text-slate-900 truncate">{p.name}</div>
-                          <div className="text-xs text-slate-500 truncate">
-                            <span className="pill pill-gray">{p.sku}</span>{' '}
-                            <span className="pill pill-gray">{p.unit}</span>
-                          </div>
-                        </div>
-                        <div className="text-sm font-extrabold text-slate-900 mono">{brl(p.price)}</div>
-                      </div>
-                    </button>
-                  ))}
-
-                  {filteredProducts.length === 0 && (
-                    <div className="dropdown-empty">Nenhum produto encontrado.</div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="card border-slate-100 shadow-none">
-              <div className="card-body flex items-center justify-between">
-                <div>
-                  <div className="text-xs text-slate-500">Subtotal</div>
-                  <div className="text-xl font-extrabold mono">{brl(totals.subtotal)}</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-xs text-slate-500">Itens</div>
-                  <div className="text-xl font-extrabold mono">{items.length}</div>
-                </div>
+        {/* coluna direita */}
+        <div className="lg:col-span-2">
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">Itens</div>
+              <div className="text-xs text-slate-500">
+                {items.length} {items.length === 1 ? 'item' : 'itens'}
               </div>
             </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Itens */}
-      <div className="card">
-        <div className="card-header">
-          <div className="card-title">Itens do Pedido</div>
-          {items.length === 0 ? (
-            <span className="pill pill-gray">vazio</span>
-          ) : (
-            <span className="pill pill-green">{items.length} itens</span>
-          )}
-        </div>
-
-        <div className="card-body">
-          {items.length === 0 ? (
-            <div className="text-slate-500 text-sm">Nenhum item adicionado.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Produto</th>
-                    <th className="table-right">Qtd</th>
-                    <th className="table-right">Preço</th>
-                    <th className="table-right">Total</th>
-                    <th></th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {items.map((i) => {
-                    const lineTotal = i.qty * i.unitPrice
-                    return (
-                      <tr key={i.productId}>
-                        <td>
-                          <div className="font-semibold text-slate-900">{i.productSnapshot.name}</div>
-                          <div className="text-xs text-slate-500">
-                            <span className="pill pill-gray">{i.productSnapshot.sku}</span>
-                          </div>
+            {items.length === 0 ? (
+              <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">Adicione itens ao orçamento.</div>
+            ) : (
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs text-slate-500">
+                      <th className="py-2">Produto</th>
+                      <th className="py-2">Qtd</th>
+                      <th className="py-2">Preço</th>
+                      <th className="py-2">Total</th>
+                      <th className="py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((i) => (
+                      <tr key={i.productId} className="border-b border-slate-100">
+                        <td className="py-3">
+                          <div className="font-semibold">{i.productSnapshot?.name || i.productId}</div>
+                          {i.productSnapshot?.sku && <div className="text-xs text-slate-500">{i.productSnapshot.sku}</div>}
                         </td>
 
-                        <td className="table-right" style={{ width: 120 }}>
+                        <td className="py-3">
                           <input
                             type="number"
                             min={1}
-                            className="form-input form-input-sm text-right mono"
                             value={i.qty}
                             onChange={(e) => updateQty(i.productId, Number(e.target.value))}
+                            className="w-20 rounded-lg border border-slate-200 px-3 py-2 text-sm"
                           />
                         </td>
 
-                        <td className="table-right" style={{ width: 160 }}>
+                        <td className="py-3">
                           <input
                             type="number"
                             min={0}
-                            step={0.01}
-                            className="form-input form-input-sm text-right mono"
+                            step="0.01"
                             value={i.unitPrice}
-                            onChange={(e) => updatePrice(i.productId, Number(e.target.value))}
+                            onChange={(e) => updateUnitPrice(i.productId, Number(e.target.value))}
+                            className="w-28 rounded-lg border border-slate-200 px-3 py-2 text-sm"
                           />
                         </td>
 
-                        <td className="table-right mono" style={{ width: 160 }}>
-                          <strong>{brl(lineTotal)}</strong>
-                        </td>
+                        <td className="py-3 font-semibold">{brl(i.qty * i.unitPrice)}</td>
 
-                        <td style={{ width: 110 }}>
-                          <button className="btn btn-danger btn-sm" onClick={() => removeItem(i.productId)}>
+                        <td className="py-3 text-right">
+                          <button onClick={() => removeItem(i.productId)} className="text-xs font-semibold text-red-600">
                             Remover
                           </button>
                         </td>
                       </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-          <div className="mt-4 flex justify-end">
-            <div className="text-right">
-              <div className="text-xs text-slate-500">Total</div>
-              <div className="text-2xl font-extrabold mono">{brl(totals.total)}</div>
+            <div className="mt-4 flex justify-end">
+              <div className="text-right">
+                <div className="text-xs text-slate-500">Total</div>
+                <div className="text-2xl font-extrabold mono">{brl(totals.total)}</div>
+              </div>
             </div>
           </div>
         </div>
