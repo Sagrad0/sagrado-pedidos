@@ -71,7 +71,7 @@ export default function NewOrderPage() {
       (selectedCustomer as any).address ||
       (selectedCustomer as any).addressDelivery ||
       null
-    setDeliveryAddress(addr ? toAddressObject(addr) : null)
+    setDeliveryAddress(toAddressObject(addr))
   }, [selectedCustomer])
 
   const totals = useMemo(() => {
@@ -103,8 +103,9 @@ export default function NewOrderPage() {
               doc: c.doc || undefined,
               phone: c.phone,
               email: c.email || undefined,
-              addressMain: toAddressObject((c as any).addressMain || c.address || undefined),
-              addressDelivery: toAddressObject(deliveryAddress || (c as any).addressDelivery || undefined),
+              // Snapshot travado (normalizado). Se não existir, não envia.
+              addressMain: toAddressObject((c as any).addressMain || c.address || undefined) || undefined,
+              addressDelivery: toAddressObject(deliveryAddress || (c as any).addressDelivery || undefined) || undefined,
               address: c.address || undefined,
             }) as any)
           : undefined,
@@ -235,13 +236,12 @@ export default function NewOrderPage() {
 
                 <button
                   onClick={() => {
-                    // mantém simples: usa endereço do cliente como entrega
                     const addr =
                       (selectedCustomer as any).addressMain ||
                       (selectedCustomer as any).address ||
                       (selectedCustomer as any).addressDelivery ||
                       null
-                    setDeliveryAddress(addr ? toAddressObject(addr) : null)
+                    setDeliveryAddress(toAddressObject(addr))
                   }}
                   className="mt-2 text-xs font-semibold text-slate-700 underline"
                 >
