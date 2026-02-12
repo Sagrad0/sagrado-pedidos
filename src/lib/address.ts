@@ -32,13 +32,22 @@ export function formatAddress(v: any): string {
   return parts.join(' - ')
 }
 
-export function toAddressObject(v: any): Address | undefined {
-  if (!v) return undefined
-  if (isAddressObject(v)) return v
+/**
+ * Normaliza qualquer valor de endereço para o formato Address.
+ * Regra: NUNCA retorna undefined (pra não quebrar setState/Firestore). Usa null quando não há endereço.
+ */
+export function toAddressObject(v: any): Address | null {
+  if (!v) return null
+
+  // Já é objeto (Address v2)
+  if (isAddressObject(v)) return v as Address
+
+  // String (legado) -> vira raw
   if (typeof v === 'string') {
     const s = v.trim()
-    if (!s) return undefined
-    return { raw: s }
+    return s ? { raw: s } : null
   }
-  return { raw: String(v).trim() }
+
+  const s = String(v).trim()
+  return s ? { raw: s } : null
 }
