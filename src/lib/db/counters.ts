@@ -18,7 +18,10 @@ export async function setCounter(id: string, value: number) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  await setDoc(doc(db, COLLECTION, id), { value })
+  await setDoc(doc(db, COLLECTION, id), {
+    value: Math.trunc(value),
+    updatedAt: Date.now(),
+  })
 }
 
 export async function incrementCounter(id: string) {
@@ -28,9 +31,14 @@ export async function incrementCounter(id: string) {
   const ref = doc(db, COLLECTION, id)
   const snap = await getDoc(ref)
 
-  const current = snap.exists() ? snap.data().value : 0
-  const next = current + 1
+  const current = snap.exists() ? Number(snap.data().value ?? 0) : 0
+  const next = Math.trunc(current) + 1
 
-  await updateDoc(ref, { value: next })
+  if (!snap.exists()) {
+    await setDoc(ref, { value: next, updatedAt: Date.now() })
+  } else {
+    await updateDoc(ref, { value: next, updatedAt: Date.now() })
+  }
+
   return next
 }
