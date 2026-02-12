@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import type { Order } from '@/types'
 import { getOrder, updateOrderStatus, duplicateOrder } from '@/lib/db/orders'
 import { generateOrderPdf } from '@/lib/pdf/generateOrderPdf'
+import { formatAddress } from '@/lib/address'
 
 const currency = new Intl.NumberFormat('pt-BR', {
   style: 'currency',
@@ -17,7 +18,6 @@ function uint8ToBase64(bytes: Uint8Array): string {
   const chunkSize = 0x8000 // 32KB (seguro para fromCharCode)
   for (let i = 0; i < bytes.length; i += chunkSize) {
     const chunk = bytes.subarray(i, i + chunkSize)
-    // fromCharCode espera number[]; usamos spread em chunk pequeno pra não estourar stack
     binary += String.fromCharCode(...Array.from(chunk))
   }
   return btoa(binary)
@@ -59,14 +59,11 @@ export default function OrderDetailsPage() {
 
     const bytes = await generateOrderPdf(order)
 
-    // ✅ FIX (Vercel/Next TS): não usar Blob/ArrayBuffer/SharedArrayBuffer.
-    // Abrir/baixar via data URL base64.
     const base64 = uint8ToBase64(bytes as Uint8Array)
     const dataUrl = `data:application/pdf;base64,${base64}`
 
     const fileName = `pedido-${String((order as any).orderNumber || order.id || 'sagrado')}.pdf`
 
-    // Tenta abrir em nova aba (visualização). Se popup for bloqueado, faz download.
     const opened = window.open(dataUrl, '_blank', 'noopener,noreferrer')
     if (!opened) {
       const a = document.createElement('a')
@@ -185,13 +182,13 @@ export default function OrderDetailsPage() {
             {((customer as any).addressMain || customer.address) && (
               <p>
                 <strong>Endereço Principal:</strong>{' '}
-                {(customer as any).addressMain || customer.address}
+                {formatAddress((customer as any).addressMain || customer.address)}
               </p>
             )}
 
             {(customer as any).addressDelivery && (
               <p>
-                <strong>Endereço de Entrega:</strong> {(customer as any).addressDelivery}
+                <strong>Endereço de Entrega:</strong> {formatAddress((customer as any).addressDelivery)}
               </p>
             )}
           </div>
