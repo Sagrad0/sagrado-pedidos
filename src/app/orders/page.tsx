@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { getAllOrders, getOrdersByStatus, searchOrders } from '@/lib/db/orders'
-import { Order, OrderStatus } from '@/types'
+import type { Order, OrderStatus } from '@/types'
 
 function brl(v: number) {
   const n = Number.isFinite(v) ? v : 0
@@ -16,6 +16,8 @@ function fmtDate(ts: number) {
       day: '2-digit',
       month: '2-digit',
       year: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
     }).format(new Date(ts))
   } catch {
     return ''
@@ -25,17 +27,15 @@ function fmtDate(ts: number) {
 function statusLabel(s: OrderStatus) {
   if (s === 'orcamento') return 'Orçamento'
   if (s === 'pedido') return 'Pedido'
-  if ((s as any) === 'faturado') return 'Faturado'
-  if ((s as any) === 'cancelado') return 'Cancelado'
+  if (s === 'faturado') return 'Faturado'
   return String(s)
 }
 
-function statusClasses(s: OrderStatus) {
-  if (s === 'orcamento') return 'bg-yellow-100 text-yellow-800 border-yellow-200'
-  if (s === 'pedido') return 'bg-blue-100 text-blue-800 border-blue-200'
-  if ((s as any) === 'faturado') return 'bg-green-100 text-green-800 border-green-200'
-  if ((s as any) === 'cancelado') return 'bg-red-100 text-red-800 border-red-200'
-  return 'bg-gray-100 text-gray-700 border-gray-200'
+function pillClass(s: OrderStatus) {
+  if (s === 'orcamento') return 'pill pill-yellow'
+  if (s === 'pedido') return 'pill pill-blue'
+  if (s === 'faturado') return 'pill pill-green'
+  return 'pill pill-gray'
 }
 
 type Tab = 'todos' | 'orcamento' | 'pedido' | 'faturado'
@@ -48,19 +48,20 @@ export default function OrdersPage() {
 
   useEffect(() => {
     let alive = true
+
     ;(async () => {
       setLoading(true)
       try {
         let data: Order[] = []
 
+        // base por status
         if (tab === 'todos') data = await getAllOrders()
-        else if (tab === 'orcamento') data = await getOrdersByStatus('orcamento')
-        else if (tab === 'pedido') data = await getOrdersByStatus('pedido')
-        else data = await getAllOrders()
+        else data = await getOrdersByStatus(tab)
 
+        // busca
         if (q.trim()) {
-          data = await searchOrders(q)
-          if (tab !== 'todos') data = data.filter((o) => o.status === tab)
+          const searched = await searchOrders(q)
+          data = tab === 'todos' ? searched : searched.filter((o) => o.status === tab)
         }
 
         if (alive) setOrders(data)
@@ -74,129 +75,162 @@ export default function OrdersPage() {
     }
   }, [q, tab])
 
-  const headerCounts = useMemo(() => {
+  const counts = useMemo(() => {
     const total = orders.length
     const orc = orders.filter((o) => o.status === 'orcamento').length
     const ped = orders.filter((o) => o.status === 'pedido').length
-    return { total, orc, ped }
+    const fat = orders.filter((o) => o.status === 'faturado').length
+    return { total, orc, ped, fat }
   }, [orders])
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold text-gray-900">Pedidos</h1>
-        <Link
-          href="/orders/new"
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700"
-        >
-          Novo Pedido
+    <div className="page">
+      {/* Header */}
+      <div className="page-header">
+        <div>
+          <div className="page-subtitle">Pedidos</div>
+          <h1 className="page-title">Lista</h1>
+          <div className="text-sm text-slate-500 mt-1">
+            Clique na linha para abrir. Busca e filtros acima.
+          </div>
+        </div>
+
+        <Link href="/orders/new" className="btn btn-primary">
+          Novo orçamento
         </Link>
       </div>
 
-      <div className="mt-4">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Buscar por número, cliente ou telefone..."
-          className="w-full border rounded-lg px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-      </div>
+      {/* Filtros */}
+      <div className="card">
+        <div className="card-body space-y-4">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+            <div className="lg:col-span-8">
+              <label className="form-label">Buscar</label>
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Número (ORC/PED), cliente, telefone, doc…"
+                className="form-input"
+              />
+              <div className="form-hint mt-1">
+                Ex.: ORC-000123 • PED-000045 • “Mercado X” • 81 9xxxx
+              </div>
+            </div>
 
-      <div className="mt-4 flex gap-2 overflow-x-auto no-scrollbar">
-        <button
-          onClick={() => setTab('todos')}
-          className={
-            (tab === 'todos' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800') +
-            ' px-4 py-2 rounded-full font-semibold whitespace-nowrap'
-          }
-        >
-          Todos <span className="opacity-80">({headerCounts.total})</span>
-        </button>
-        <button
-          onClick={() => setTab('orcamento')}
-          className={
-            (tab === 'orcamento' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800') +
-            ' px-4 py-2 rounded-full font-semibold whitespace-nowrap'
-          }
-        >
-          Orçamento <span className="opacity-80">({headerCounts.orc})</span>
-        </button>
-        <button
-          onClick={() => setTab('pedido')}
-          className={
-            (tab === 'pedido' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800') +
-            ' px-4 py-2 rounded-full font-semibold whitespace-nowrap'
-          }
-        >
-          Pedido <span className="opacity-80">({headerCounts.ped})</span>
-        </button>
-        <button
-          onClick={() => setTab('faturado')}
-          className={
-            (tab === 'faturado' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800') +
-            ' px-4 py-2 rounded-full font-semibold whitespace-nowrap'
-          }
-        >
-          Faturado
-        </button>
-      </div>
-
-      <div className="mt-5">
-        {loading ? (
-          <div className="text-gray-500">Carregando...</div>
-        ) : orders.length === 0 ? (
-          <div className="text-gray-500">Nenhum pedido encontrado.</div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {orders.map((o) => {
-              const client = o.customerSnapshot?.name ?? '—'
-              const phone = o.customerSnapshot?.phone ?? ''
-              const total = o.totals?.total ?? 0
-
-              return (
-                <Link
-                  key={o.id}
-                  href={`/orders/${o.id}`}
-                  className="block bg-white border rounded-xl p-4 hover:shadow-sm transition"
+            <div className="lg:col-span-4">
+              <label className="form-label">Status</label>
+              <div className="tabs">
+                <button
+                  type="button"
+                  onClick={() => setTab('todos')}
+                  className={tab === 'todos' ? 'tab tab-active' : 'tab'}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="text-xs text-gray-500">Nº</div>
-                      <div className="text-lg font-bold text-gray-900">{o.orderNumber}</div>
-                    </div>
+                  Todos <span className="opacity-80">({counts.total})</span>
+                </button>
 
-                    <span
-                      className={
-                        'text-xs font-bold px-3 py-1 rounded-full border ' +
-                        statusClasses(o.status)
-                      }
-                    >
-                      {statusLabel(o.status)}
-                    </span>
-                  </div>
+                <button
+                  type="button"
+                  onClick={() => setTab('orcamento')}
+                  className={tab === 'orcamento' ? 'tab tab-active' : 'tab'}
+                >
+                  Orç <span className="opacity-80">({counts.orc})</span>
+                </button>
 
-                  <div className="mt-3">
-                    <div className="text-xs text-gray-500">Cliente</div>
-                    <div className="text-base font-semibold text-gray-900 truncate">{client}</div>
-                    {phone ? (
-                      <div className="text-sm text-gray-600 truncate">{phone}</div>
-                    ) : (
-                      <div className="text-sm text-gray-400">sem telefone</div>
-                    )}
-                  </div>
+                <button
+                  type="button"
+                  onClick={() => setTab('pedido')}
+                  className={tab === 'pedido' ? 'tab tab-active' : 'tab'}
+                >
+                  Ped <span className="opacity-80">({counts.ped})</span>
+                </button>
 
-                    <div className="mt-4 flex items-end justify-between">
-                      <div>
-                        <div className="text-xs text-gray-500">Total</div>
-                        <div className="text-xl font-extrabold text-gray-900">{brl(total)}</div>
-                      </div>
-                      <div className="text-sm text-gray-500">{fmtDate(o.createdAt)}</div>
-                    </div>
-                </Link>
-              )
-            })}
+                <button
+                  type="button"
+                  onClick={() => setTab('faturado')}
+                  className={tab === 'faturado' ? 'tab tab-active' : 'tab'}
+                >
+                  Fat <span className="opacity-80">({counts.fat})</span>
+                </button>
+              </div>
+            </div>
           </div>
-        )}
+        </div>
+      </div>
+
+      {/* Tabela */}
+      <div className="card">
+        <div className="card-header">
+          <div className="card-title">Registros</div>
+          <div className="text-sm text-slate-500 mono">
+            {loading ? 'Carregando…' : `${orders.length} encontrados`}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Número</th>
+                <th>Cliente</th>
+                <th>Status</th>
+                <th className="table-right">Total</th>
+                <th className="table-right">Criado</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="text-slate-500">
+                    Carregando…
+                  </td>
+                </tr>
+              ) : orders.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="text-slate-500">
+                    Nenhum registro encontrado.
+                  </td>
+                </tr>
+              ) : (
+                orders.map((o) => {
+                  const number = o.budgetNumber || o.orderNumber || '—'
+                  const client = o.customerSnapshot?.name ?? '—'
+                  const phone = o.customerSnapshot?.phone ?? ''
+                  const total = Number(o.totals?.total ?? 0) || 0
+
+                  return (
+                    <tr
+                      key={o.id}
+                      className="cursor-pointer"
+                      onClick={() => (window.location.href = `/orders/${o.id}`)}
+                    >
+                      <td>
+                        <div className="font-extrabold">{number}</div>
+                        <div className="text-xs text-slate-500">ID: {o.id}</div>
+                      </td>
+
+                      <td>
+                        <div className="font-semibold">{client}</div>
+                        {phone ? (
+                          <div className="text-xs text-slate-500">{phone}</div>
+                        ) : (
+                          <div className="text-xs text-slate-400">sem telefone</div>
+                        )}
+                      </td>
+
+                      <td>
+                        <span className={pillClass(o.status)}>{statusLabel(o.status)}</span>
+                      </td>
+
+                      <td className="table-right mono font-extrabold">{brl(total)}</td>
+                      <td className="table-right mono text-slate-500">{fmtDate(o.createdAt)}</td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )
