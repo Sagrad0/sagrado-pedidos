@@ -1,9 +1,16 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Customer, CustomerFormData, Address } from '@/types'
+import { useEffect, useMemo, useState } from 'react'
+import type { Address, Customer, CustomerFormData } from '@/types'
 import { formatAddress, toAddressObject } from '@/lib/address'
-import { getAllCustomers, searchCustomers, createCustomer, updateCustomer, deleteCustomer } from '@/lib/db/customers'
+import {
+  getAllCustomers,
+  searchCustomers,
+  createCustomer,
+  updateCustomer,
+  deleteCustomer,
+} from '@/lib/db/customers'
+
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -27,99 +34,114 @@ const customerSchema = z.object({
   email: z.string().email('Email inválido').optional().or(z.literal('')),
   addressMain: addressSchema.optional(),
   addressDelivery: addressSchema.optional(),
-  // legado (mantido)
-  address: z.string().optional(),
+  address: z.string().optional(), // legado
 })
 
 type CustomerFormValues = z.infer<typeof customerSchema>
 
+function normalizeAddress(a: any): Address | undefined {
+  if (!a) return undefined
+  const out: any = {}
+  ;['raw', 'cep', 'street', 'number', 'complement', 'neighborhood', 'city', 'state'].forEach((k) => {
+    const v = typeof a?.[k] === 'string' ? a[k].trim() : a?.[k]
+    if (v) out[k] = v
+  })
+  return Object.keys(out).length ? (out as Address) : undefined
+}
+
+const trimOrEmpty = (v?: string) => (typeof v === 'string' ? v.trim() : '')
+
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
-  const [filteredCustomers, setFilteredCustomers] = useState<Customer[]>([])
-  const [searchTerm, setSearchTerm] = useState('')
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
-  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [filtered, setFiltered] = useState<Customer[]>([])
+  const [q, setQ] = useState('')
   const [loading, setLoading] = useState(true)
 
-  // ✅ Observabilidade: erro do submit (pra enxergar no iPhone sem DevTools)
+  const [selected, setSelected] = useState<Customer | null>(null)
+  const [open, setOpen] = useState(false)
+
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const { register, handleSubmit, reset, setValue, formState: { errors } } = useForm<CustomerFormValues>({
+  const {
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    watch,
+    formState: { errors },
+  } = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
   })
 
   useEffect(() => {
-    async function fetchData() {
+    let alive = true
+    ;(async () => {
       setLoading(true)
-      const data = await getAllCustomers()
-      setCustomers(data)
-      setFilteredCustomers(data)
-      setLoading(false)
+      try {
+        const data = await getAllCustomers()
+        if (!alive) return
+        setCustomers(data)
+        setFiltered(data)
+      } finally {
+        if (alive) setLoading(false)
+      }
+    })()
+    return () => {
+      alive = false
     }
-    fetchData()
   }, [])
 
   const handleSearch = async (term: string) => {
-    setSearchTerm(term)
-    if (!term) {
-      setFilteredCustomers(customers)
+    setQ(term)
+    if (!term.trim()) {
+      setFiltered(customers)
       return
     }
     const results = await searchCustomers(term)
-    setFilteredCustomers(results)
+    setFiltered(results)
   }
 
   const openModal = (customer?: Customer) => {
-    // ✅ limpa erro ao abrir modal
     setSubmitError(null)
 
     if (customer) {
-      setSelectedCustomer(customer)
+      setSelected(customer)
       setValue('name', customer.name)
       setValue('legalName', (customer as any).legalName || '')
       setValue('doc', customer.doc || '')
       setValue('phone', customer.phone)
       setValue('email', customer.email || '')
-      setValue('addressMain', (toAddressObject((customer as any).addressMain || customer.address) as any) || ({} as any))
-      setValue('addressDelivery', (toAddressObject((customer as any).addressDelivery) as any) || ({} as any))
-      // legado
+
+      const main = toAddressObject((customer as any).addressMain || customer.address)
+      const delv = toAddressObject((customer as any).addressDelivery)
+      setValue('addressMain', (main as any) || ({} as any))
+      setValue('addressDelivery', (delv as any) || ({} as any))
+
       setValue('address', customer.address || '')
     } else {
-      setSelectedCustomer(null)
+      setSelected(null)
       reset()
     }
 
-    setIsModalOpen(true)
+    setOpen(true)
   }
 
   const closeModal = () => {
-    setSelectedCustomer(null)
+    setSelected(null)
     reset()
-    setIsModalOpen(false)
+    setOpen(false)
   }
 
   const onSubmit = async (values: CustomerFormValues) => {
     setSubmitError(null)
 
-    const trimOrEmpty = (v?: string) => (typeof v === 'string' ? v.trim() : '')
     const legalName = trimOrEmpty(values.legalName) || undefined
     const doc = trimOrEmpty(values.doc) || undefined
     const email = trimOrEmpty(values.email) || undefined
-    const normalizeAddress = (a: any): Address | undefined => {
-      if (!a) return undefined
-      const out: any = {}
-      ;['raw','cep','street','number','complement','neighborhood','city','state'].forEach((k) => {
-        const v = typeof a?.[k] === 'string' ? a[k].trim() : a?.[k]
-        if (v) out[k] = v
-      })
-      return Object.keys(out).length ? (out as Address) : undefined
-    }
 
     const addressMain = normalizeAddress(values.addressMain)
     const addressDelivery = normalizeAddress(values.addressDelivery)
 
-    // ✅ legado: só envia se tiver valor.
-    // Se não tiver, usa addressMain como compatibilidade (sem mandar undefined).
     const legacyAddress = trimOrEmpty(values.address) || formatAddress(addressMain) || undefined
 
     const payload: CustomerFormData = {
@@ -134,15 +156,12 @@ export default function CustomersPage() {
     }
 
     try {
-      if (selectedCustomer) {
-        await updateCustomer(selectedCustomer.id, payload)
-      } else {
-        await createCustomer(payload)
-      }
+      if (selected) await updateCustomer(selected.id, payload)
+      else await createCustomer(payload)
 
       const data = await getAllCustomers()
       setCustomers(data)
-      setFilteredCustomers(data)
+      setFiltered(data)
       closeModal()
     } catch (err: any) {
       console.error('[CustomersPage.onSubmit] FAILED', err)
@@ -156,142 +175,299 @@ export default function CustomersPage() {
 
     const data = await getAllCustomers()
     setCustomers(data)
-    setFilteredCustomers(data)
+    setFiltered(data)
   }
 
+  // Preview de endereço no modal (ajuda UX de campo)
+  const previewMain = useMemo(() => formatAddress(watch('addressMain') as any), [watch])
+  const previewDelivery = useMemo(() => formatAddress(watch('addressDelivery') as any), [watch])
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Clientes</h1>
-        <button onClick={() => openModal()} className="btn btn-primary">Novo Cliente</button>
+    <div className="page">
+      {/* Header */}
+      <div className="page-header">
+        <div>
+          <div className="page-subtitle">Cadastros</div>
+          <h1 className="page-title">Clientes</h1>
+          <div className="text-sm text-slate-500 mt-1">Busca rápida + clique na linha pra editar.</div>
+        </div>
+
+        <button onClick={() => openModal()} className="btn btn-primary">
+          Novo cliente
+        </button>
       </div>
 
-      <div className="flex gap-3">
-        <input
-          value={searchTerm}
-          onChange={(e) => handleSearch(e.target.value)}
-          placeholder="Buscar por nome, telefone, doc..."
-          className="form-input flex-1"
-        />
+      {/* Busca */}
+      <div className="card">
+        <div className="card-body">
+          <label className="form-label">Buscar</label>
+          <input
+            value={q}
+            onChange={(e) => handleSearch(e.target.value)}
+            placeholder="Nome, telefone, doc, razão social…"
+            className="form-input"
+          />
+          <div className="form-hint mt-1">Dica: buscar por telefone costuma ser o mais rápido.</div>
+        </div>
       </div>
 
-      {loading ? (
-        <div className="text-gray-500">Carregando...</div>
-      ) : (
-        <div className="card">
+      {/* Lista */}
+      <div className="card">
+        <div className="card-header">
+          <div className="card-title">Registros</div>
+          <div className="text-sm text-slate-500 mono">
+            {loading ? 'Carregando…' : `${filtered.length} encontrados`}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="card-body text-slate-500">Carregando…</div>
+        ) : (
           <div className="overflow-x-auto">
             <table className="table">
               <thead>
                 <tr>
-                  <th>Nome</th>
+                  <th>Cliente</th>
                   <th>Telefone</th>
                   <th>Doc</th>
-                  <th>Ações</th>
+                  <th>Endereço</th>
+                  <th className="table-right">Ações</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredCustomers.map((c) => (
-                  <tr key={c.id}>
-                    <td>
-                      <div className="font-medium">{c.name}</div>
-                      {(c as any).legalName && <div className="text-xs text-gray-500">{(c as any).legalName}</div>}
-                    </td>
-                    <td>{c.phone}</td>
-                    <td>{c.doc || '-'}</td>
-                    <td className="flex gap-2">
-                      <button className="btn btn-secondary btn-sm" onClick={() => openModal(c)}>Editar</button>
-                      <button className="btn btn-danger btn-sm" onClick={() => handleDelete(c.id)}>Excluir</button>
-                    </td>
-                  </tr>
-                ))}
-                {filteredCustomers.length === 0 && (
+                {filtered.map((c) => {
+                  const legalName = (c as any).legalName
+                  const addrMain = (c as any).addressMain || c.address
+                  const addrText = addrMain ? formatAddress(addrMain) : '-'
+
+                  return (
+                    <tr
+                      key={c.id}
+                      className="cursor-pointer"
+                      onClick={() => openModal(c)}
+                      title="Clique para editar"
+                    >
+                      <td>
+                        <div className="font-semibold">{c.name}</div>
+                        {legalName ? <div className="text-xs text-slate-500">{legalName}</div> : null}
+                      </td>
+
+                      <td className="mono">{c.phone}</td>
+                      <td className="mono">{c.doc || '-'}</td>
+
+                      <td>
+                        <div className="text-sm text-slate-900 line-clamp-2">{addrText || '-'}</div>
+                      </td>
+
+                      <td className="table-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-end gap-2">
+                          <button className="btn btn-secondary btn-sm" onClick={() => openModal(c)}>
+                            Editar
+                          </button>
+                          <button className="btn btn-danger btn-sm" onClick={() => handleDelete(c.id)}>
+                            Excluir
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+
+                {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="text-center text-gray-500 py-6">Nenhum cliente encontrado.</td>
+                    <td colSpan={5} className="text-center text-slate-500 py-8">
+                      Nenhum cliente encontrado.
+                    </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {isModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <div className="modal-header">
-              <h2 className="text-lg font-semibold">{selectedCustomer ? 'Editar Cliente' : 'Novo Cliente'}</h2>
-              <button onClick={closeModal} className="text-gray-500 hover:text-gray-700">✕</button>
+      {/* Modal */}
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={closeModal}
+        >
+          <div
+            className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <div className="text-xs text-slate-500">{selected ? 'Editar' : 'Novo'}</div>
+                <div className="text-lg font-semibold text-slate-900">Cliente</div>
+              </div>
+              <button onClick={closeModal} className="btn btn-ghost btn-sm">
+                Fechar
+              </button>
             </div>
 
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-5">
               {submitError && (
-                <div className="p-3 rounded bg-red-50 text-red-700 text-sm">
+                <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700 border border-red-100">
                   {submitError}
                 </div>
               )}
 
-              <div>
-                <label className="form-label">Nome Fantasia*</label>
-                <input {...register('name')} className="form-input" />
-                {errors.name && <p className="text-red-500 text-sm">{errors.name.message}</p>}
-              </div>
+              {/* Dados */}
+              <div className="card">
+                <div className="card-header">
+                  <div className="card-title">Dados</div>
+                </div>
+                <div className="card-body grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="form-label">Nome fantasia*</label>
+                    <input {...register('name')} className="form-input" />
+                    {errors.name && <p className="text-red-600 text-sm mt-1">{errors.name.message}</p>}
+                  </div>
 
-              <div>
-                <label className="form-label">Razão Social</label>
-                <input {...register('legalName')} className="form-input" />
-              </div>
+                  <div>
+                    <label className="form-label">Razão social</label>
+                    <input {...register('legalName')} className="form-input" />
+                  </div>
 
-              <div>
-                <label className="form-label">Documento (CNPJ/CPF)</label>
-                <input {...register('doc')} className="form-input" />
-              </div>
+                  <div>
+                    <label className="form-label">Documento (CNPJ/CPF)</label>
+                    <input {...register('doc')} className="form-input" />
+                  </div>
 
-              <div>
-                <label className="form-label">Telefone*</label>
-                <input {...register('phone')} className="form-input" />
-                {errors.phone && <p className="text-red-500 text-sm">{errors.phone.message}</p>}
-              </div>
+                  <div>
+                    <label className="form-label">Telefone*</label>
+                    <input {...register('phone')} className="form-input" />
+                    {errors.phone && <p className="text-red-600 text-sm mt-1">{errors.phone.message}</p>}
+                  </div>
 
-              <div>
-                <label className="form-label">E-mail</label>
-                <input {...register('email')} type="email" className="form-input" />
-                {errors.email && <p className="text-red-500 text-sm">{errors.email.message}</p>}
-              </div>
-
-              <div className="space-y-2">
-                <label className="form-label">Endereço Principal (objeto)</label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <input {...register('addressMain.cep')} className="form-input" placeholder="CEP" />
-                  <input {...register('addressMain.street')} className="form-input sm:col-span-2" placeholder="Rua / Av." />
-                  <input {...register('addressMain.number')} className="form-input" placeholder="Número" />
-                  <input {...register('addressMain.complement')} className="form-input sm:col-span-2" placeholder="Complemento" />
-                  <input {...register('addressMain.neighborhood')} className="form-input" placeholder="Bairro" />
-                  <input {...register('addressMain.city')} className="form-input" placeholder="Cidade" />
-                  <input {...register('addressMain.state')} className="form-input" placeholder="UF" />
-                  <input {...register('addressMain.raw')} className="form-input sm:col-span-3" placeholder="Texto livre (opcional)" />
+                  <div className="md:col-span-2">
+                    <label className="form-label">E-mail</label>
+                    <input {...register('email')} type="email" className="form-input" />
+                    {errors.email && <p className="text-red-600 text-sm mt-1">{errors.email.message}</p>}
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="form-label">Endereço de Entrega (objeto)</label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <input {...register('addressDelivery.cep')} className="form-input" placeholder="CEP" />
-                  <input {...register('addressDelivery.street')} className="form-input sm:col-span-2" placeholder="Rua / Av." />
-                  <input {...register('addressDelivery.number')} className="form-input" placeholder="Número" />
-                  <input {...register('addressDelivery.complement')} className="form-input sm:col-span-2" placeholder="Complemento" />
-                  <input {...register('addressDelivery.neighborhood')} className="form-input" placeholder="Bairro" />
-                  <input {...register('addressDelivery.city')} className="form-input" placeholder="Cidade" />
-                  <input {...register('addressDelivery.state')} className="form-input" placeholder="UF" />
-                  <input {...register('addressDelivery.raw')} className="form-input sm:col-span-3" placeholder="Texto livre (opcional)" />
+              {/* Endereço principal */}
+              <div className="card">
+                <div className="card-header">
+                  <div className="card-title">Endereço principal</div>
+                  <span className="pill pill-gray">cadastro</span>
+                </div>
+                <div className="card-body space-y-3">
+                  {previewMain ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
+                      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Prévia</div>
+                      <div className="mt-1">{previewMain}</div>
+                    </div>
+                  ) : null}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                    <div className="sm:col-span-3">
+                      <label className="form-label">CEP</label>
+                      <input {...register('addressMain.cep')} className="form-input" />
+                    </div>
+                    <div className="sm:col-span-7">
+                      <label className="form-label">Rua / Av.</label>
+                      <input {...register('addressMain.street')} className="form-input" />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="form-label">Nº</label>
+                      <input {...register('addressMain.number')} className="form-input" />
+                    </div>
+
+                    <div className="sm:col-span-5">
+                      <label className="form-label">Bairro</label>
+                      <input {...register('addressMain.neighborhood')} className="form-input" />
+                    </div>
+                    <div className="sm:col-span-5">
+                      <label className="form-label">Cidade</label>
+                      <input {...register('addressMain.city')} className="form-input" />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="form-label">UF</label>
+                      <input {...register('addressMain.state')} className="form-input" />
+                    </div>
+
+                    <div className="sm:col-span-12">
+                      <label className="form-label">Complemento</label>
+                      <input {...register('addressMain.complement')} className="form-input" />
+                    </div>
+
+                    <div className="sm:col-span-12">
+                      <label className="form-label">Texto livre (opcional)</label>
+                      <input {...register('addressMain.raw')} className="form-input" />
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Campo legado (não exibir normalmente). Mantido para compatibilidade */}
+              {/* Endereço de entrega */}
+              <div className="card">
+                <div className="card-header">
+                  <div className="card-title">Endereço de entrega</div>
+                  <span className="pill pill-blue">opcional</span>
+                </div>
+                <div className="card-body space-y-3">
+                  {previewDelivery ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
+                      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Prévia</div>
+                      <div className="mt-1">{previewDelivery}</div>
+                    </div>
+                  ) : null}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                    <div className="sm:col-span-3">
+                      <label className="form-label">CEP</label>
+                      <input {...register('addressDelivery.cep')} className="form-input" />
+                    </div>
+                    <div className="sm:col-span-7">
+                      <label className="form-label">Rua / Av.</label>
+                      <input {...register('addressDelivery.street')} className="form-input" />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="form-label">Nº</label>
+                      <input {...register('addressDelivery.number')} className="form-input" />
+                    </div>
+
+                    <div className="sm:col-span-5">
+                      <label className="form-label">Bairro</label>
+                      <input {...register('addressDelivery.neighborhood')} className="form-input" />
+                    </div>
+                    <div className="sm:col-span-5">
+                      <label className="form-label">Cidade</label>
+                      <input {...register('addressDelivery.city')} className="form-input" />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="form-label">UF</label>
+                      <input {...register('addressDelivery.state')} className="form-input" />
+                    </div>
+
+                    <div className="sm:col-span-12">
+                      <label className="form-label">Complemento</label>
+                      <input {...register('addressDelivery.complement')} className="form-input" />
+                    </div>
+
+                    <div className="sm:col-span-12">
+                      <label className="form-label">Texto livre (opcional)</label>
+                      <input {...register('addressDelivery.raw')} className="form-input" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Legado */}
               <input type="hidden" {...register('address')} />
 
-              <div className="pt-2 flex gap-3">
-                <button type="submit" className="btn btn-primary">{selectedCustomer ? 'Salvar' : 'Criar'}</button>
-                <button type="button" onClick={closeModal} className="btn btn-secondary">Cancelar</button>
+              {/* Footer */}
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                <button type="button" onClick={closeModal} className="btn btn-secondary">
+                  Cancelar
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  {selected ? 'Salvar' : 'Criar'}
+                </button>
               </div>
             </form>
           </div>
