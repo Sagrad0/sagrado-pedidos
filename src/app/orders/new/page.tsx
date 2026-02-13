@@ -1,15 +1,19 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
-import { OrderFormData, Product, Customer } from '@/types'
+import { useEffect, useMemo, useState } from 'react'
+import type { Address, Customer, OrderFormData, Product } from '@/types'
 import { getAllCustomers } from '@/lib/db/customers'
 import { getAllProducts } from '@/lib/db/products'
 import { createOrder } from '@/lib/db/orders'
 import { incrementCounter } from '@/lib/db/counters'
-import type { Address } from '@/types'
 import { formatAddress, toAddressObject } from '@/lib/address'
 
 type OrderItemDraft = OrderFormData['items'][number]
+
+function brl(v: number) {
+  const n = Number.isFinite(v) ? v : 0
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n)
+}
 
 function stripUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
   const out: any = {}
@@ -19,16 +23,15 @@ function stripUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
   return out
 }
 
-function brl(v: number) {
-  const n = Number.isFinite(v) ? v : 0
-  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n)
-}
-
 export default function NewOrderPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+
+  // UI helpers (Mercos-like): filtros rápidos
+  const [customerQuery, setCustomerQuery] = useState('')
+  const [productQuery, setProductQuery] = useState('')
 
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('')
   const selectedCustomer = useMemo(
@@ -43,7 +46,7 @@ export default function NewOrderPage() {
 
   useEffect(() => {
     let mounted = true
-    const run = async () => {
+    ;(async () => {
       setLoading(true)
       try {
         const [cs, ps] = await Promise.all([getAllCustomers(), getAllProducts()])
@@ -53,15 +56,14 @@ export default function NewOrderPage() {
       } finally {
         if (mounted) setLoading(false)
       }
-    }
-    run()
+    })()
     return () => {
       mounted = false
     }
   }, [])
 
   useEffect(() => {
-    // quando troca cliente, reseta endereço de entrega para o principal (se existir)
+    // Troca de cliente: reseta endereço de entrega pro principal (se existir)
     if (!selectedCustomer) {
       setDeliveryAddress(null)
       return
@@ -74,65 +76,33 @@ export default function NewOrderPage() {
     setDeliveryAddress(toAddressObject(addr))
   }, [selectedCustomer])
 
+  const filteredCustomers = useMemo(() => {
+    const q = customerQuery.trim().toLowerCase()
+    if (!q) return customers
+    return customers.filter((c) => {
+      const name = String(c.name || '').toLowerCase()
+      const phone = String(c.phone || '').toLowerCase()
+      const doc = String((c as any).doc || '').toLowerCase()
+      const legalName = String((c as any).legalName || '').toLowerCase()
+      return name.includes(q) || phone.includes(q) || doc.includes(q) || legalName.includes(q)
+    })
+  }, [customers, customerQuery])
+
+  const filteredProducts = useMemo(() => {
+    const q = productQuery.trim().toLowerCase()
+    if (!q) return products
+    return products.filter((p) => {
+      const name = String(p.name || '').toLowerCase()
+      const sku = String((p as any).sku || '').toLowerCase()
+      return name.includes(q) || sku.includes(q)
+    })
+  }, [products, productQuery])
+
   const totals = useMemo(() => {
     const subtotal = items.reduce((acc, i) => acc + i.qty * i.unitPrice, 0)
     const total = subtotal
     return { subtotal, total }
   }, [items])
-
-  const handleSubmit = async () => {
-    if (!selectedCustomerId) return alert('Selecione um cliente.')
-    if (items.length === 0) return alert('Adicione ao menos 1 item.')
-
-    setSaving(true)
-
-    try {
-      const c = selectedCustomer
-
-      const seq = await incrementCounter('budget_seq')
-      const budgetNumber = `ORC-${String(seq).padStart(6, '0')}`
-
-      const payload: any = {
-        status: 'orcamento',
-        budgetNumber,
-        customerId: selectedCustomerId,
-        customerSnapshot: c
-          ? (stripUndefined({
-              name: c.name,
-              legalName: (c as any).legalName || undefined,
-              doc: c.doc || undefined,
-              phone: c.phone,
-              email: c.email || undefined,
-              // Snapshot travado (normalizado). Se não existir, não envia.
-              addressMain: toAddressObject((c as any).addressMain || c.address || undefined) || undefined,
-              addressDelivery: toAddressObject(deliveryAddress || (c as any).addressDelivery || undefined) || undefined,
-              address: c.address || undefined,
-            }) as any)
-          : undefined,
-        items: items.map((i) => ({
-          productId: i.productId,
-          productSnapshot: i.productSnapshot,
-          qty: i.qty,
-          unitPrice: i.unitPrice,
-        })),
-        totals: {
-          subtotal: totals.subtotal,
-          discount: 0,
-          freight: 0,
-          total: totals.total,
-        },
-        notes: '',
-      }
-
-      const id = await createOrder(payload)
-      window.location.href = `/orders/${id}`
-    } catch (err: any) {
-      console.error('[orders/new.handleSubmit] FAILED', err)
-      alert(err?.message || 'Erro ao salvar pedido.')
-    } finally {
-      setSaving(false)
-    }
-  }
 
   const addItem = () => {
     if (!productPickerId) return
@@ -140,7 +110,6 @@ export default function NewOrderPage() {
     if (!p) return
 
     setItems((prev) => {
-      // se já existe, incrementa qty
       const ix = prev.findIndex((i) => i.productId === p.id)
       if (ix >= 0) {
         const copy = [...prev]
@@ -163,6 +132,7 @@ export default function NewOrderPage() {
     })
 
     setProductPickerId('')
+    setProductQuery('')
   }
 
   const removeItem = (productId: string) => {
@@ -176,179 +146,308 @@ export default function NewOrderPage() {
   }
 
   const updateUnitPrice = (productId: string, unitPrice: number) => {
-    setItems((prev) => prev.map((i) => (i.productId === productId ? { ...i, unitPrice: Number(unitPrice || 0) } : i)))
-  }
-
-  if (loading) {
-    return (
-      <div className="p-6">
-        <div className="text-sm text-slate-500">Carregando…</div>
-      </div>
+    setItems((prev) =>
+      prev.map((i) => (i.productId === productId ? { ...i, unitPrice: Number(unitPrice || 0) } : i)),
     )
   }
 
+  const handleSubmit = async () => {
+    if (!selectedCustomerId) return alert('Selecione um cliente.')
+    if (items.length === 0) return alert('Adicione ao menos 1 item.')
+
+    setSaving(true)
+
+    try {
+      const c = selectedCustomer
+      const seq = await incrementCounter('budget_seq')
+      const budgetNumber = `ORC-${String(seq).padStart(6, '0')}`
+
+      const payload: any = {
+        status: 'orcamento',
+        budgetNumber,
+        customerId: selectedCustomerId,
+        customerSnapshot: c
+          ? (stripUndefined({
+              name: c.name,
+              legalName: (c as any).legalName || undefined,
+              doc: c.doc || undefined,
+              phone: c.phone,
+              email: c.email || undefined,
+              addressMain: toAddressObject((c as any).addressMain || c.address || undefined),
+              addressDelivery: toAddressObject(deliveryAddress || (c as any).addressDelivery || undefined),
+              address: c.address || undefined,
+            }) as any)
+          : undefined,
+        items: items.map((i) => ({
+          productId: i.productId,
+          productSnapshot: i.productSnapshot,
+          qty: i.qty,
+          unitPrice: i.unitPrice,
+        })),
+        totals: {
+          subtotal: totals.subtotal,
+          discount: 0,
+          freight: 0,
+          total: totals.total,
+        },
+        notes: '',
+      }
+
+      const id = await createOrder(payload)
+      window.location.href = `/orders/${id}`
+    } catch (err: any) {
+      console.error('[orders/new.handleSubmit] FAILED', err)
+      alert(err?.message || 'Erro ao salvar orçamento.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return <div className="text-sm text-slate-500">Carregando…</div>
+  }
+
   return (
-    <div className="p-6">
-      <div className="mb-4 flex items-center justify-between">
+    <div className="page">
+      {/* Header */}
+      <div className="page-header">
         <div>
-          <div className="text-xs text-slate-500">Pedidos</div>
-          <div className="text-2xl font-extrabold">Novo orçamento</div>
+          <div className="page-subtitle">Pedidos</div>
+          <h1 className="page-title">Novo orçamento</h1>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            <span className="pill pill-blue">1. Cliente</span>
+            <span className="pill pill-gray">2. Itens</span>
+            <span className="pill pill-gray">3. Revisar</span>
+            <span className="pill pill-gray">4. Salvar</span>
+          </div>
         </div>
 
-        <button
-          onClick={handleSubmit}
-          disabled={saving}
-          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-        >
-          {saving ? 'Salvando…' : 'Salvar orçamento'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={handleSubmit} disabled={saving} className="btn btn-primary">
+            {saving ? 'Salvando…' : 'Salvar orçamento'}
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* coluna esquerda */}
-        <div className="lg:col-span-1">
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <div className="text-sm font-semibold">Cliente</div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        {/* LEFT (context) */}
+        <div className="lg:col-span-4">
+          <div className="space-y-4 lg:sticky lg:top-20">
+            {/* Cliente */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Cliente</div>
+                {selectedCustomer ? <span className="pill pill-green">selecionado</span> : <span className="pill pill-gray">pendente</span>}
+              </div>
+              <div className="card-body space-y-3">
+                <div>
+                  <label className="form-label">Buscar cliente</label>
+                  <input
+                    value={customerQuery}
+                    onChange={(e) => setCustomerQuery(e.target.value)}
+                    placeholder="Nome, telefone ou doc…"
+                    className="form-input"
+                  />
+                </div>
 
-            <div className="mt-2">
-              <select
-                value={selectedCustomerId}
-                onChange={(e) => setSelectedCustomerId(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
-              >
-                <option value="">Selecione…</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+                <div>
+                  <label className="form-label">Selecionar</label>
+                  <select
+                    value={selectedCustomerId}
+                    onChange={(e) => setSelectedCustomerId(e.target.value)}
+                    className="form-input"
+                  >
+                    <option value="">Selecione…</option>
+                    {filteredCustomers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}{c.phone ? ` — ${c.phone}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="form-hint mt-1">Dica: digite no campo acima para filtrar rápido.</div>
+                </div>
+
+                {selectedCustomer && (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-sm font-semibold text-slate-900">{selectedCustomer.name}</div>
+                    <div className="mt-1 space-y-0.5 text-sm text-slate-700">
+                      {selectedCustomer.phone && <div>{selectedCustomer.phone}</div>}
+                      {selectedCustomer.email && <div className="text-slate-600">{selectedCustomer.email}</div>}
+                      {(selectedCustomer as any).doc && <div className="text-slate-600">Doc: {(selectedCustomer as any).doc}</div>}
+                    </div>
+
+                    <div className="mt-3">
+                      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Entrega</div>
+                      <div className="mt-1 text-sm text-slate-800">
+                        {deliveryAddress ? formatAddress(deliveryAddress) : '—'}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const addr =
+                            (selectedCustomer as any).addressMain ||
+                            (selectedCustomer as any).address ||
+                            (selectedCustomer as any).addressDelivery ||
+                            null
+                          setDeliveryAddress(toAddressObject(addr))
+                        }}
+                        className="mt-2 text-xs font-semibold text-slate-700 underline"
+                      >
+                        Usar endereço principal
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
-            {selectedCustomer && (
-              <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm">
-                <div className="font-semibold">{selectedCustomer.name}</div>
-                {selectedCustomer.phone && <div className="text-slate-600">{selectedCustomer.phone}</div>}
-                {selectedCustomer.email && <div className="text-slate-600">{selectedCustomer.email}</div>}
+            {/* Resumo */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Resumo</div>
+                <span className="pill pill-yellow">Orçamento</span>
+              </div>
+              <div className="card-body space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-600">Itens</span>
+                  <span className="font-semibold mono">{items.length}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-600">Subtotal</span>
+                  <span className="font-semibold mono">{brl(totals.subtotal)}</span>
+                </div>
+                <div className="flex items-center justify-between border-t border-slate-200 pt-2">
+                  <span className="font-semibold">Total</span>
+                  <span className="text-xl font-extrabold mono">{brl(totals.total)}</span>
+                </div>
 
-                <div className="mt-2 text-xs font-semibold text-slate-500">Endereço de entrega</div>
-                <div className="mt-1 text-slate-700">{deliveryAddress ? formatAddress(deliveryAddress) : '—'}</div>
-
-                <button
-                  onClick={() => {
-                    const addr =
-                      (selectedCustomer as any).addressMain ||
-                      (selectedCustomer as any).address ||
-                      (selectedCustomer as any).addressDelivery ||
-                      null
-                    setDeliveryAddress(toAddressObject(addr))
-                  }}
-                  className="mt-2 text-xs font-semibold text-slate-700 underline"
-                >
-                  Usar endereço principal
+                <button onClick={handleSubmit} disabled={saving} className="btn btn-primary w-full mt-2">
+                  {saving ? 'Salvando…' : 'Salvar orçamento'}
                 </button>
               </div>
-            )}
-          </div>
-
-          <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-            <div className="text-sm font-semibold">Adicionar item</div>
-
-            <div className="mt-2 flex gap-2">
-              <select
-                value={productPickerId}
-                onChange={(e) => setProductPickerId(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
-              >
-                <option value="">Selecione um produto…</option>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                onClick={addItem}
-                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-              >
-                +
-              </button>
             </div>
           </div>
         </div>
 
-        {/* coluna direita */}
-        <div className="lg:col-span-2">
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-semibold">Itens</div>
-              <div className="text-xs text-slate-500">
-                {items.length} {items.length === 1 ? 'item' : 'itens'}
-              </div>
+        {/* RIGHT (work) */}
+        <div className="lg:col-span-8 space-y-4">
+          {/* Adicionar item */}
+          <div className="card">
+            <div className="card-header">
+              <div className="card-title">Itens do orçamento</div>
+              <div className="text-xs text-slate-500">{items.length} {items.length === 1 ? 'item' : 'itens'}</div>
             </div>
 
-            {items.length === 0 ? (
-              <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">Adicione itens ao orçamento.</div>
-            ) : (
-              <div className="mt-3 overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-xs text-slate-500">
-                      <th className="py-2">Produto</th>
-                      <th className="py-2">Qtd</th>
-                      <th className="py-2">Preço</th>
-                      <th className="py-2">Total</th>
-                      <th className="py-2"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((i) => (
-                      <tr key={i.productId} className="border-b border-slate-100">
-                        <td className="py-3">
-                          <div className="font-semibold">{i.productSnapshot?.name || i.productId}</div>
-                          {i.productSnapshot?.sku && <div className="text-xs text-slate-500">{i.productSnapshot.sku}</div>}
-                        </td>
+            <div className="card-body space-y-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
+                <div className="sm:col-span-5">
+                  <label className="form-label">Buscar produto</label>
+                  <input
+                    value={productQuery}
+                    onChange={(e) => setProductQuery(e.target.value)}
+                    placeholder="Nome ou SKU…"
+                    className="form-input"
+                  />
+                </div>
 
-                        <td className="py-3">
-                          <input
-                            type="number"
-                            min={1}
-                            value={i.qty}
-                            onChange={(e) => updateQty(i.productId, Number(e.target.value))}
-                            className="w-20 rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                          />
-                        </td>
-
-                        <td className="py-3">
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            value={i.unitPrice}
-                            onChange={(e) => updateUnitPrice(i.productId, Number(e.target.value))}
-                            className="w-28 rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                          />
-                        </td>
-
-                        <td className="py-3 font-semibold">{brl(i.qty * i.unitPrice)}</td>
-
-                        <td className="py-3 text-right">
-                          <button onClick={() => removeItem(i.productId)} className="text-xs font-semibold text-red-600">
-                            Remover
-                          </button>
-                        </td>
-                      </tr>
+                <div className="sm:col-span-5">
+                  <label className="form-label">Selecionar</label>
+                  <select
+                    value={productPickerId}
+                    onChange={(e) => setProductPickerId(e.target.value)}
+                    className="form-input"
+                  >
+                    <option value="">Selecione um produto…</option>
+                    {filteredProducts.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}{(p as any).sku ? ` — ${(p as any).sku}` : ''}
+                      </option>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                  </select>
+                </div>
 
-            <div className="mt-4 flex justify-end">
-              <div className="text-right">
-                <div className="text-xs text-slate-500">Total</div>
-                <div className="text-2xl font-extrabold mono">{brl(totals.total)}</div>
+                <div className="sm:col-span-2 flex items-end">
+                  <button
+                    type="button"
+                    onClick={addItem}
+                    className="btn btn-primary w-full"
+                    disabled={!productPickerId}
+                  >
+                    Adicionar
+                  </button>
+                </div>
+              </div>
+
+              {items.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  1) Selecione o cliente • 2) Adicione itens • 3) Salve.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Produto</th>
+                        <th className="table-right">Qtd</th>
+                        <th className="table-right">Preço</th>
+                        <th className="table-right">Total</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((i) => (
+                        <tr key={i.productId}>
+                          <td>
+                            <div className="font-semibold">{i.productSnapshot?.name || i.productId}</div>
+                            {(i.productSnapshot as any)?.sku && (
+                              <div className="text-xs text-slate-500">SKU {(i.productSnapshot as any).sku}</div>
+                            )}
+                          </td>
+
+                          <td className="table-right">
+                            <input
+                              type="number"
+                              min={1}
+                              value={i.qty}
+                              onChange={(e) => updateQty(i.productId, Number(e.target.value))}
+                              className="form-input form-input-sm w-24 text-right"
+                            />
+                          </td>
+
+                          <td className="table-right">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={i.unitPrice}
+                              onChange={(e) => updateUnitPrice(i.productId, Number(e.target.value))}
+                              className="form-input form-input-sm w-32 text-right"
+                            />
+                          </td>
+
+                          <td className="table-right font-semibold mono">{brl(i.qty * i.unitPrice)}</td>
+
+                          <td className="table-right">
+                            <button
+                              type="button"
+                              onClick={() => removeItem(i.productId)}
+                              className="btn btn-ghost btn-sm text-red-700 hover:bg-red-50"
+                            >
+                              Remover
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-4 pt-2">
+                <div className="text-right">
+                  <div className="text-xs text-slate-500">Total</div>
+                  <div className="text-2xl font-extrabold mono">{brl(totals.total)}</div>
+                </div>
               </div>
             </div>
           </div>
