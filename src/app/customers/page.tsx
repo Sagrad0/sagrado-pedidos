@@ -3,13 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Address, Customer, CustomerFormData } from '@/types'
 import { formatAddress, toAddressObject } from '@/lib/address'
-import {
-  getAllCustomers,
-  searchCustomers,
-  createCustomer,
-  updateCustomer,
-  deleteCustomer,
-} from '@/lib/db/customers'
+import { getAllCustomers, createCustomer, updateCustomer, deleteCustomer } from '@/lib/db/customers'
 
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -51,6 +45,15 @@ function normalizeAddress(a: any): Address | undefined {
 
 const trimOrEmpty = (v?: string) => (typeof v === 'string' ? v.trim() : '')
 
+const normalizeText = (v?: string) =>
+  (v || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+
+const onlyDigits = (v?: string) => (v || '').replace(/\D/g, '')
+
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [filtered, setFiltered] = useState<Customer[]>([])
@@ -91,13 +94,44 @@ export default function CustomersPage() {
     }
   }, [])
 
-  const handleSearch = async (term: string) => {
+  // ✅ BUSCA LOCAL (sem Firestore) — funciona com clientes legados
+  const handleSearch = (term: string) => {
     setQ(term)
-    if (!term.trim()) {
+
+    const t = term.trim()
+    if (!t) {
       setFiltered(customers)
       return
     }
-    const results = await searchCustomers(term)
+
+    const tNorm = normalizeText(t)
+    const tDigits = onlyDigits(t)
+
+    const results = customers.filter((c) => {
+      const legalName = (c as any).legalName || ''
+      const fantasyOrName = c.name || ''
+      const doc = c.doc || ''
+      const phone = c.phone || ''
+      const email = c.email || ''
+      const legacyAddress = (c as any).address || ''
+      const mainAddrText = formatAddress((c as any).addressMain || c.address || null) || ''
+
+      const haystack = normalizeText(
+        [fantasyOrName, legalName, doc, phone, email, legacyAddress, mainAddrText]
+          .filter(Boolean)
+          .join(' ')
+      )
+
+      // Se o termo tiver números, tenta bater por dígitos (telefone/doc) também
+      if (tDigits.length >= 3) {
+        const docDigits = onlyDigits(doc)
+        const phoneDigits = onlyDigits(phone)
+        if (docDigits.includes(tDigits) || phoneDigits.includes(tDigits)) return true
+      }
+
+      return haystack.includes(tNorm)
+    })
+
     setFiltered(results)
   }
 
@@ -161,7 +195,43 @@ export default function CustomersPage() {
 
       const data = await getAllCustomers()
       setCustomers(data)
-      setFiltered(data)
+      // mantém a UX: após salvar, aplica filtro atual (se tiver)
+      if (q.trim()) {
+        // reaplica filtro local
+        const term = q
+        const t = term.trim()
+        const tNorm = normalizeText(t)
+        const tDigits = onlyDigits(t)
+
+        const results = data.filter((c) => {
+          const legalName = (c as any).legalName || ''
+          const fantasyOrName = c.name || ''
+          const doc = c.doc || ''
+          const phone = c.phone || ''
+          const email = c.email || ''
+          const legacyAddress = (c as any).address || ''
+          const mainAddrText = formatAddress((c as any).addressMain || c.address || null) || ''
+
+          const haystack = normalizeText(
+            [fantasyOrName, legalName, doc, phone, email, legacyAddress, mainAddrText]
+              .filter(Boolean)
+              .join(' ')
+          )
+
+          if (tDigits.length >= 3) {
+            const docDigits = onlyDigits(doc)
+            const phoneDigits = onlyDigits(phone)
+            if (docDigits.includes(tDigits) || phoneDigits.includes(tDigits)) return true
+          }
+
+          return haystack.includes(tNorm)
+        })
+
+        setFiltered(results)
+      } else {
+        setFiltered(data)
+      }
+
       closeModal()
     } catch (err: any) {
       console.error('[CustomersPage.onSubmit] FAILED', err)
@@ -175,7 +245,42 @@ export default function CustomersPage() {
 
     const data = await getAllCustomers()
     setCustomers(data)
-    setFiltered(data)
+
+    // reaplica filtro local após excluir
+    if (q.trim()) {
+      const term = q
+      const t = term.trim()
+      const tNorm = normalizeText(t)
+      const tDigits = onlyDigits(t)
+
+      const results = data.filter((c) => {
+        const legalName = (c as any).legalName || ''
+        const fantasyOrName = c.name || ''
+        const doc = c.doc || ''
+        const phone = c.phone || ''
+        const email = c.email || ''
+        const legacyAddress = (c as any).address || ''
+        const mainAddrText = formatAddress((c as any).addressMain || c.address || null) || ''
+
+        const haystack = normalizeText(
+          [fantasyOrName, legalName, doc, phone, email, legacyAddress, mainAddrText]
+            .filter(Boolean)
+            .join(' ')
+        )
+
+        if (tDigits.length >= 3) {
+          const docDigits = onlyDigits(doc)
+          const phoneDigits = onlyDigits(phone)
+          if (docDigits.includes(tDigits) || phoneDigits.includes(tDigits)) return true
+        }
+
+        return haystack.includes(tNorm)
+      })
+
+      setFiltered(results)
+    } else {
+      setFiltered(data)
+    }
   }
 
   // Preview de endereço no modal (ajuda UX de campo)
@@ -241,12 +346,7 @@ export default function CustomersPage() {
                   const addrText = addrMain ? formatAddress(addrMain) : '-'
 
                   return (
-                    <tr
-                      key={c.id}
-                      className="cursor-pointer"
-                      onClick={() => openModal(c)}
-                      title="Clique para editar"
-                    >
+                    <tr key={c.id} className="cursor-pointer" onClick={() => openModal(c)} title="Clique para editar">
                       <td>
                         <div className="font-semibold">{c.name}</div>
                         {legalName ? <div className="text-xs text-slate-500">{legalName}</div> : null}
@@ -288,10 +388,7 @@ export default function CustomersPage() {
 
       {/* Modal */}
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 overflow-y-auto"
-          onClick={closeModal}
-        >
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 overflow-y-auto" onClick={closeModal}>
           <div
             className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-xl max-h-[calc(100vh-2rem)] flex flex-col"
             onClick={(e) => e.stopPropagation()}
@@ -308,9 +405,7 @@ export default function CustomersPage() {
 
             <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-5 flex-1 overflow-y-auto min-h-0">
               {submitError && (
-                <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700 border border-red-100">
-                  {submitError}
-                </div>
+                <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700 border border-red-100">{submitError}</div>
               )}
 
               {/* Dados */}
