@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import type { Order } from '@/types'
+import type { Order, OrderStatus } from '@/types'
 import { getOrder, updateOrderStatus, duplicateOrder } from '@/lib/db/orders'
 import { generateOrderPdf } from '@/lib/pdf/generateOrderPdf'
 import { formatAddress } from '@/lib/address'
@@ -42,6 +42,7 @@ export default function OrderDetailsPage() {
   const [order, setOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -95,7 +96,7 @@ export default function OrderDetailsPage() {
       total,
       number: String(o.budgetNumber || o.orderNumber || ''),
       createdAt: Number(o.createdAt || 0),
-      status: String(o.status || ''),
+      status: o.status as OrderStatus,
     }
   }, [order])
 
@@ -104,23 +105,29 @@ export default function OrderDetailsPage() {
     setOrder(data)
   }
 
-  const handleStatusChange = async (status: string) => {
+  const handleAction = async (action: 'convert' | 'cancel' | 'invoice' | 'duplicate') => {
     if (!order) return
     setBusy(true)
+    setError(null)
     try {
-      await updateOrderStatus((order as any).id, status)
+      switch (action) {
+        case 'convert':
+          await updateOrderStatus(order.id, 'pedido')
+          break
+        case 'cancel':
+          await updateOrderStatus(order.id, 'cancelado')
+          break
+        case 'invoice':
+          await updateOrderStatus(order.id, 'faturado')
+          break
+        case 'duplicate':
+          const newId = await duplicateOrder(order)
+          router.push(`/orders/${newId}`)
+          return // não executa reload
+      }
       await reload()
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleDuplicate = async () => {
-    if (!order) return
-    setBusy(true)
-    try {
-      const newId = await duplicateOrder(order)
-      router.push(`/orders/${newId}`)
+    } catch (err: any) {
+      setError(err.message || 'Erro ao processar ação')
     } finally {
       setBusy(false)
     }
@@ -153,6 +160,99 @@ export default function OrderDetailsPage() {
   if (loading) return <div className="text-sm text-slate-500">Carregando…</div>
   if (!order) return <div className="text-sm text-slate-500">Pedido não encontrado.</div>
 
+  const status = meta.status
+  const isOrcamento = status === 'orcamento'
+  const isPedido = status === 'pedido'
+  const isFaturado = status === 'faturado'
+  const isCancelado = status === 'cancelado'
+
+  // Renderiza os botões de ação conforme o estado
+  const renderActions = () => {
+    if (isCancelado) {
+      return (
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => handleAction('duplicate')}
+          disabled={busy}
+        >
+          {busy ? 'Duplicando...' : 'Duplicar'}
+        </button>
+      )
+    }
+
+    if (isFaturado) {
+      return (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleGeneratePdf}
+            disabled={busy}
+          >
+            Gerar PDF
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => handleAction('duplicate')}
+            disabled={busy}
+          >
+            {busy ? 'Duplicando...' : 'Duplicar'}
+          </button>
+        </div>
+      )
+    }
+
+    if (isOrcamento) {
+      return (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => handleAction('convert')}
+            disabled={busy}
+          >
+            {busy ? 'Convertendo...' : 'Converter em Pedido'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => handleAction('cancel')}
+            disabled={busy}
+          >
+            {busy ? 'Cancelando...' : 'Cancelar Orçamento'}
+          </button>
+        </div>
+      )
+    }
+
+    if (isPedido) {
+      return (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => handleAction('invoice')}
+            disabled={busy}
+          >
+            {busy ? 'Faturando...' : 'Faturar Pedido'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => handleAction('cancel')}
+            disabled={busy}
+          >
+            {busy ? 'Cancelando...' : 'Cancelar Pedido'}
+          </button>
+        </div>
+      )
+    }
+
+    return null
+  }
+
   return (
     <div className="page">
       {/* Header */}
@@ -162,28 +262,27 @@ export default function OrderDetailsPage() {
           <div className="page-title">{meta.number ? meta.number : 'Detalhe do pedido'}</div>
           <div className="text-sm text-slate-500 mt-1">
             {meta.createdAt ? `Criado em ${fmtDate(meta.createdAt)}` : ''}
-            {meta.status ? ` • Status: ${meta.status}` : ''}
+            {status ? ` • Status: ${status}` : ''}
           </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <button type="button" className="btn btn-secondary" onClick={() => router.push('/orders')} disabled={busy}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => router.push('/orders')}
+            disabled={busy}
+          >
             Voltar
           </button>
 
-          <button type="button" className="btn btn-secondary" onClick={handleGeneratePdf} disabled={busy}>
-            Gerar PDF
-          </button>
+          {/* Botões de ação substituem o antigo select */}
+          {renderActions()}
 
-          <button type="button" className="btn btn-secondary" onClick={handleDuplicate} disabled={busy}>
-            Duplicar
-          </button>
-
-          <select className="form-input" value={String((meta.o as any).status || '')} onChange={(e) => handleStatusChange(e.target.value)} disabled={busy}>
-            <option value="orcamento">Orçamento</option>
-            <option value="pedido">Pedido</option>
-            <option value="faturado">Faturado</option>
-          </select>
+          {/* Botão de erro, se houver */}
+          {error && (
+            <span className="text-sm text-red-600 self-center">{error}</span>
+          )}
         </div>
       </div>
 
