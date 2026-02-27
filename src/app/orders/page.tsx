@@ -25,17 +25,23 @@ function fmtDate(ts: number) {
 }
 
 function statusLabel(s: OrderStatus) {
-  if (s === 'orcamento') return 'Orçamento'
-  if (s === 'pedido') return 'Pedido'
-  if (s === 'faturado') return 'Faturado'
-  return String(s)
+  switch (s) {
+    case 'orcamento': return 'Orçamento'
+    case 'pedido': return 'Pedido'
+    case 'faturado': return 'Faturado'
+    case 'cancelado': return 'Cancelado'
+    default: return String(s)
+  }
 }
 
 function pillClass(s: OrderStatus) {
-  if (s === 'orcamento') return 'pill pill-yellow'
-  if (s === 'pedido') return 'pill pill-blue'
-  if (s === 'faturado') return 'pill pill-green'
-  return 'pill pill-gray'
+  switch (s) {
+    case 'orcamento': return 'pill pill-yellow'
+    case 'pedido': return 'pill pill-blue'
+    case 'faturado': return 'pill pill-green'
+    case 'cancelado': return 'pill pill-gray'
+    default: return 'pill pill-gray'
+  }
 }
 
 type Tab = 'todos' | 'orcamento' | 'pedido' | 'faturado'
@@ -62,7 +68,10 @@ export default function OrdersPage() {
           data = tab === 'todos' ? searched : searched.filter((o) => o.status === tab)
         }
 
-        if (alive) setOrders(data)
+        // Filtra cancelados no frontend (não usa where !=)
+        const visible = data.filter(o => o.status !== 'cancelado')
+
+        if (alive) setOrders(visible)
       } finally {
         if (alive) setLoading(false)
       }
