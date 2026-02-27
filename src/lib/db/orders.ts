@@ -10,6 +10,7 @@ import {
   orderBy,
 } from 'firebase/firestore'
 import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
+import { incrementCounter } from '@/lib/db/counters'
 import type { Order, OrderItem, OrderFormData, OrderTotals, OrderStatus } from '@/types'
 
 const COLLECTION = 'orders'
@@ -222,15 +223,30 @@ export async function updateOrder(id: string, data: Partial<Order>) {
   await updateDoc(doc(db, COLLECTION, id), payload)
 }
 
-export async function updateOrderStatus(id: string, status: string) {
+/**
+ * ✅ CORREÇÃO: ao mudar para "pedido", gera PED-xxxxxx e incrementa contador.
+ * - Só gera uma vez (se já existir orderNumber, não mexe).
+ */
+export async function updateOrderStatus(id: string, status: OrderStatus | string) {
   await ensureAuthReady()
   const db = getDbInstance()
 
   const current = await getOrder(id)
-  const merged = { ...(current || {}), status, updatedAt: Date.now() }
-  const search = buildSearchTokens(merged as any)
+  if (!current) throw new Error('Pedido não encontrado.')
 
-  await updateDoc(doc(db, COLLECTION, id), { status, updatedAt: Date.now(), search })
+  const next: any = { status, updatedAt: Date.now() }
+
+  // transição: ORÇAMENTO -> PEDIDO (gera orderNumber)
+  if (status === 'pedido' && !(current as any).orderNumber) {
+    const seq = await incrementCounter('order_seq')
+    next.orderNumber = `PED-${String(seq).padStart(6, '0')}`
+  }
+
+  // atualiza search junto
+  const merged = { ...(current as any), ...next }
+  next.search = buildSearchTokens(merged)
+
+  await updateDoc(doc(db, COLLECTION, id), next)
 }
 
 export async function duplicateOrder(orderOrId: Order | string) {
@@ -238,7 +254,6 @@ export async function duplicateOrder(orderOrId: Order | string) {
   const db = getDbInstance()
 
   let orderData: Order | null
-
   if (typeof orderOrId === 'string') {
     orderData = await getOrder(orderOrId)
     if (!orderData) throw new Error('Pedido não encontrado para duplicar.')
@@ -251,13 +266,14 @@ export async function duplicateOrder(orderOrId: Order | string) {
   const payload: any = { ...data }
   payload.items = normalizeItems(payload.items || [])
   payload.totals =
-    payload.totals ?? calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
+    payload.totals ??
+    calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
 
   const now = Date.now()
   payload.createdAt = now
   payload.updatedAt = now
   payload.status = 'orcamento'
-
+  payload.orderNumber = undefined // duplicado volta como orçamento
   payload.search = buildSearchTokens(payload)
 
   const ref = await addDoc(collection(db, COLLECTION), payload)
