@@ -10,7 +10,7 @@ import {
   orderBy,
 } from 'firebase/firestore'
 import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
-import type { Order, OrderItem, OrderFormData, OrderTotals } from '@/types'
+import type { Order, OrderItem, OrderFormData, OrderTotals, OrderStatus } from '@/types'
 
 const COLLECTION = 'orders'
 
@@ -43,7 +43,6 @@ function buildSearchTokens(o: Partial<Order>): string[] {
   push(cs.email)
   push(cs.address) // legado (string)
 
-  // itens: sku e nome entram forte na busca
   const items: any[] = (o as any).items || []
   items.forEach((it) => {
     const ps = it?.productSnapshot || {}
@@ -60,7 +59,6 @@ function normalizeItems(items: any[]): OrderItem[] {
     const unitPrice = Number(it.unitPrice ?? it.price ?? 0)
     const total = typeof it.total === 'number' ? it.total : qty * unitPrice
 
-    // mantém schema "novo" (qty/unitPrice) e compatibilidade (quantity/price)
     return {
       productId: String(it.productId),
       productSnapshot: it.productSnapshot ?? {
@@ -99,8 +97,25 @@ export async function getAllOrders(): Promise<Order[]> {
 }
 
 /**
+ * ✅ FUNÇÃO QUE FALTAVA (e o build quebra sem ela)
+ */
+export async function getOrdersByStatus(status: OrderStatus): Promise<Order[]> {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const q = query(
+    collection(db, COLLECTION),
+    where('status', '==', status),
+    orderBy('createdAt', 'desc')
+  )
+
+  const snapshot = await getDocs(q)
+  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
+}
+
+/**
  * Busca por token (array-contains).
- * ✅ Corrige: também busca por dígitos (telefone/doc) e deduplica.
+ * Também busca por dígitos (telefone/doc) e deduplica.
  */
 export async function searchOrders(term: string): Promise<Order[]> {
   await ensureAuthReady()
@@ -137,31 +152,22 @@ export async function getOrder(id: string): Promise<Order | null> {
   return { id: snap.id, ...snap.data() } as Order
 }
 
-/**
- * Compatível com o app:
- * - orders/new chama createOrder(payload) onde payload é OrderFormData (items sem total)
- * - Aqui normalizamos itens, calculamos total e garantimos campos mínimos do pedido
- */
 export async function createOrder(data: Partial<Order> | OrderFormData) {
   await ensureAuthReady()
   const db = getDbInstance()
 
   const payload: any = { ...data }
 
-  // itens
   payload.items = normalizeItems(payload.items || [])
 
-  // totals
   const discount = Number(payload.discount ?? payload.totals?.discount ?? 0) || 0
   const freight = Number(payload.freight ?? payload.totals?.freight ?? 0) || 0
   payload.totals = payload.totals ?? calcTotals(payload.items, discount, freight)
 
-  // createdAt/updatedAt -> epoch ms (pra UI formatar sem quebrar)
   const now = Date.now()
   payload.createdAt = typeof payload.createdAt === 'number' ? payload.createdAt : now
   payload.updatedAt = now
 
-  // ✅ Corrige a busca: gera tokens
   payload.search = buildSearchTokens(payload)
 
   const ref = await addDoc(collection(db, COLLECTION), payload)
@@ -174,14 +180,12 @@ export async function updateOrder(id: string, data: Partial<Order>) {
 
   const payload: any = { ...data }
 
-  // se update vier com items, normaliza também (mantém coerência)
   if (payload.items) {
     payload.items = normalizeItems(payload.items)
   }
 
   payload.updatedAt = Date.now()
 
-  // ✅ Só recalcula search quando update tocar campos relevantes
   const touchesSearch =
     payload.orderNumber !== undefined ||
     payload.budgetNumber !== undefined ||
@@ -192,7 +196,6 @@ export async function updateOrder(id: string, data: Partial<Order>) {
     payload.items !== undefined
 
   if (touchesSearch) {
-    // Para não perder tokens quando vier parcial, busca o atual e mergeia
     const current = await getOrder(id)
     const merged = { ...(current || {}), ...payload }
     payload.search = buildSearchTokens(merged as any)
@@ -205,7 +208,6 @@ export async function updateOrderStatus(id: string, status: string) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  // status muda = search precisa refletir também (pra busca por status funcionar)
   const current = await getOrder(id)
   const merged = { ...(current || {}), status, updatedAt: Date.now() }
   const search = buildSearchTokens(merged as any)
@@ -213,11 +215,6 @@ export async function updateOrderStatus(id: string, status: string) {
   await updateDoc(doc(db, COLLECTION, id), { status, updatedAt: Date.now(), search })
 }
 
-/**
- * Mantém compatibilidade:
- * - Em alguns lugares: duplicateOrder(order.id) (string)
- * - Em outros: duplicateOrder(order) (Order)
- */
 export async function duplicateOrder(orderOrId: Order | string) {
   await ensureAuthReady()
   const db = getDbInstance()
@@ -236,15 +233,14 @@ export async function duplicateOrder(orderOrId: Order | string) {
   const payload: any = { ...data }
   payload.items = normalizeItems(payload.items || [])
   payload.totals =
-    payload.totals ?? calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
+    payload.totals ??
+    calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
 
   const now = Date.now()
   payload.createdAt = now
   payload.updatedAt = now
-  // mantém o status como orçamento ao duplicar
   payload.status = 'orcamento'
 
-  // ✅ Corrige a busca: gera tokens
   payload.search = buildSearchTokens(payload)
 
   const ref = await addDoc(collection(db, COLLECTION), payload)
