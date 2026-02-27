@@ -115,6 +115,25 @@ function calcTotals(items: OrderItem[], discount = 0, freight = 0): OrderTotals 
   }
 }
 
+/**
+ * Firestore NÃO aceita undefined.
+ * Isso remove undefined recursivamente de objetos/arrays.
+ */
+function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(stripUndefined).filter((v) => v !== undefined) as any
+  }
+  if (value && typeof value === 'object') {
+    const out: any = {}
+    for (const [k, v] of Object.entries(value as any)) {
+      if (v === undefined) continue
+      out[k] = stripUndefined(v)
+    }
+    return out
+  }
+  return value
+}
+
 export async function getAllOrders(): Promise<Order[]> {
   await ensureAuthReady()
   const db = getDbInstance()
@@ -192,7 +211,8 @@ export async function createOrder(data: Partial<Order> | OrderFormData) {
 
   payload.search = buildSearchTokens(payload)
 
-  const ref = await addDoc(collection(db, COLLECTION), payload)
+  const clean = stripUndefined(payload)
+  const ref = await addDoc(collection(db, COLLECTION), clean)
   return ref.id
 }
 
@@ -220,12 +240,12 @@ export async function updateOrder(id: string, data: Partial<Order>) {
     payload.search = buildSearchTokens(merged as any)
   }
 
-  await updateDoc(doc(db, COLLECTION, id), payload)
+  const clean = stripUndefined(payload)
+  await updateDoc(doc(db, COLLECTION, id), clean)
 }
 
 /**
- * ✅ AQUI É A CORREÇÃO DO TEU BUG:
- * - mudar pra "pedido" precisa gerar PED- e incrementar order_seq (uma vez).
+ * Ao mudar para "pedido", gera PED- e incrementa order_seq (uma vez).
  */
 export async function updateOrderStatus(id: string, status: OrderStatus | string) {
   await ensureAuthReady()
@@ -237,7 +257,6 @@ export async function updateOrderStatus(id: string, status: OrderStatus | string
   const next: any = { status, updatedAt: Date.now() }
 
   if (status === 'pedido') {
-    // só gera uma vez
     if (!(current as any).orderNumber) {
       const seq = await incrementCounter('order_seq')
       next.orderNumber = `PED-${String(seq).padStart(6, '0')}`
@@ -247,9 +266,16 @@ export async function updateOrderStatus(id: string, status: OrderStatus | string
   const merged = { ...(current as any), ...next }
   next.search = buildSearchTokens(merged)
 
-  await updateDoc(doc(db, COLLECTION, id), next)
+  const clean = stripUndefined(next)
+  await updateDoc(doc(db, COLLECTION, id), clean)
 }
 
+/**
+ * ✅ Duplicar:
+ * - cria um NOVO ORÇAMENTO (ORC novo usando budget_seq)
+ * - NÃO leva orderNumber (porque orçamento não é pedido)
+ * - evita undefined no Firestore
+ */
 export async function duplicateOrder(orderOrId: Order | string) {
   await ensureAuthReady()
   const db = getDbInstance()
@@ -263,22 +289,32 @@ export async function duplicateOrder(orderOrId: Order | string) {
     orderData = orderOrId
   }
 
-  const { id, ...data } = orderData
+  const { id, ...data } = orderData as any
 
   const payload: any = { ...data }
   payload.items = normalizeItems(payload.items || [])
+
   payload.totals =
     payload.totals ??
     calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
 
+  // novo ORC
+  const bseq = await incrementCounter('budget_seq')
+  payload.budgetNumber = `ORC-${String(bseq).padStart(6, '0')}`
+
+  // volta como orçamento
+  payload.status = 'orcamento'
+
+  // remove orderNumber de vez (sem undefined)
+  delete payload.orderNumber
+
   const now = Date.now()
   payload.createdAt = now
   payload.updatedAt = now
-  payload.status = 'orcamento'
-  payload.orderNumber = undefined
 
   payload.search = buildSearchTokens(payload)
 
-  const ref = await addDoc(collection(db, COLLECTION), payload)
+  const clean = stripUndefined(payload)
+  const ref = await addDoc(collection(db, COLLECTION), clean)
   return ref.id
 }
