@@ -54,11 +54,9 @@ export default function OrdersPage() {
       try {
         let data: Order[] = []
 
-        // base por status
         if (tab === 'todos') data = await getAllOrders()
         else data = await getOrdersByStatus(tab)
 
-        // busca
         if (q.trim()) {
           const searched = await searchOrders(q)
           data = tab === 'todos' ? searched : searched.filter((o) => o.status === tab)
@@ -85,7 +83,6 @@ export default function OrdersPage() {
 
   return (
     <div className="page">
-      {/* Header */}
       <div className="page-header">
         <div>
           <div className="page-subtitle">Pedidos</div>
@@ -100,7 +97,6 @@ export default function OrdersPage() {
         </Link>
       </div>
 
-      {/* Filtros */}
       <div className="card">
         <div className="card-body space-y-4">
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
@@ -157,7 +153,6 @@ export default function OrdersPage() {
         </div>
       </div>
 
-      {/* Tabela */}
       <div className="card">
         <div className="card-header">
           <div className="card-title">Registros</div>
@@ -193,7 +188,11 @@ export default function OrdersPage() {
                 </tr>
               ) : (
                 orders.map((o) => {
-                  const number = o.budgetNumber || o.orderNumber || '—'
+                  const isPedido = o.status === 'pedido' || o.status === 'faturado'
+                  const number = isPedido
+                    ? o.orderNumber || o.budgetNumber || '—'
+                    : o.budgetNumber || o.orderNumber || '—'
+
                   const client = o.customerSnapshot?.name ?? '—'
                   const phone = o.customerSnapshot?.phone ?? ''
                   const total = Number(o.totals?.total ?? 0) || 0
