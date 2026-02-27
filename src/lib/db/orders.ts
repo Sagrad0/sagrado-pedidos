@@ -14,6 +14,46 @@ import type { Order, OrderItem, OrderFormData, OrderTotals } from '@/types'
 
 const COLLECTION = 'orders'
 
+function normalizeDigits(value: string) {
+  return (value || '').replace(/\D+/g, '')
+}
+
+function buildSearchTokens(o: Partial<Order>): string[] {
+  const tokens: string[] = []
+  const push = (v?: any) => {
+    if (v === undefined || v === null) return
+    const s = String(v).trim().toLowerCase()
+    if (!s) return
+    tokens.push(s)
+    const digits = normalizeDigits(s)
+    if (digits && digits !== s) tokens.push(digits)
+  }
+
+  push(o.orderNumber)
+  push(o.budgetNumber)
+  push(o.status)
+  push(o.customerId)
+  push(o.notes)
+
+  const cs: any = (o as any).customerSnapshot || {}
+  push(cs.name)
+  push(cs.legalName)
+  push(cs.doc)
+  push(cs.phone)
+  push(cs.email)
+  push(cs.address) // legado (string)
+
+  // itens: sku e nome entram forte na busca
+  const items: any[] = (o as any).items || []
+  items.forEach((it) => {
+    const ps = it?.productSnapshot || {}
+    push(ps.sku)
+    push(ps.name)
+  })
+
+  return Array.from(new Set(tokens))
+}
+
 function normalizeItems(items: any[]): OrderItem[] {
   return (items || []).map((it) => {
     const qty = Number(it.qty ?? it.quantity ?? 0)
@@ -32,19 +72,20 @@ function normalizeItems(items: any[]): OrderItem[] {
       qty,
       unitPrice,
       total,
-      // legado (não usado pelos types, mas pode existir nos docs antigos)
-      ...(it.quantity != null ? { quantity: qty } : {}),
-      ...(it.price != null ? { price: unitPrice } : {}),
-    } as any as OrderItem
+    }
   })
 }
 
 function calcTotals(items: OrderItem[], discount = 0, freight = 0): OrderTotals {
-  const subtotal = items.reduce((acc, it) => acc + Number(it.total ?? 0), 0)
-  const d = Number(discount ?? 0) || 0
-  const f = Number(freight ?? 0) || 0
-  const total = subtotal - d + f
-  return { subtotal, discount: d, freight: f, total }
+  const subtotal = items.reduce((sum, it) => sum + (Number(it.total) || 0), 0)
+  const total = subtotal - (Number(discount) || 0) + (Number(freight) || 0)
+
+  return {
+    subtotal,
+    discount: Number(discount) || 0,
+    freight: Number(freight) || 0,
+    total,
+  }
 }
 
 export async function getAllOrders(): Promise<Order[]> {
@@ -57,31 +98,32 @@ export async function getAllOrders(): Promise<Order[]> {
   return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
 }
 
-export async function getOrdersByStatus(status: string): Promise<Order[]> {
-  await ensureAuthReady()
-  const db = getDbInstance()
-
-  const q = query(
-    collection(db, COLLECTION),
-    where('status', '==', status),
-    orderBy('createdAt', 'desc')
-  )
-
-  const snapshot = await getDocs(q)
-  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
-}
-
+/**
+ * Busca por token (array-contains).
+ * ✅ Corrige: também busca por dígitos (telefone/doc) e deduplica.
+ */
 export async function searchOrders(term: string): Promise<Order[]> {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  const q = query(
-    collection(db, COLLECTION),
-    where('search', 'array-contains', term.toLowerCase())
-  )
+  const t = (term || '').trim().toLowerCase()
+  if (!t) return []
 
-  const snapshot = await getDocs(q)
-  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
+  const tDigits = normalizeDigits(t)
+
+  const q1 = query(collection(db, COLLECTION), where('search', 'array-contains', t))
+  const snap1 = await getDocs(q1)
+  const res1 = snap1.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
+
+  if (!tDigits || tDigits === t) return res1
+
+  const q2 = query(collection(db, COLLECTION), where('search', 'array-contains', tDigits))
+  const snap2 = await getDocs(q2)
+  const res2 = snap2.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
+
+  const map = new Map<string, Order>()
+  ;[...res1, ...res2].forEach((o) => map.set(o.id, o))
+  return Array.from(map.values())
 }
 
 export async function getOrder(id: string): Promise<Order | null> {
@@ -119,6 +161,9 @@ export async function createOrder(data: Partial<Order> | OrderFormData) {
   payload.createdAt = typeof payload.createdAt === 'number' ? payload.createdAt : now
   payload.updatedAt = now
 
+  // ✅ Corrige a busca: gera tokens
+  payload.search = buildSearchTokens(payload)
+
   const ref = await addDoc(collection(db, COLLECTION), payload)
   return ref.id
 }
@@ -136,6 +181,23 @@ export async function updateOrder(id: string, data: Partial<Order>) {
 
   payload.updatedAt = Date.now()
 
+  // ✅ Só recalcula search quando update tocar campos relevantes
+  const touchesSearch =
+    payload.orderNumber !== undefined ||
+    payload.budgetNumber !== undefined ||
+    payload.status !== undefined ||
+    payload.customerId !== undefined ||
+    payload.customerSnapshot !== undefined ||
+    payload.notes !== undefined ||
+    payload.items !== undefined
+
+  if (touchesSearch) {
+    // Para não perder tokens quando vier parcial, busca o atual e mergeia
+    const current = await getOrder(id)
+    const merged = { ...(current || {}), ...payload }
+    payload.search = buildSearchTokens(merged as any)
+  }
+
   await updateDoc(doc(db, COLLECTION, id), payload)
 }
 
@@ -143,7 +205,12 @@ export async function updateOrderStatus(id: string, status: string) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  await updateDoc(doc(db, COLLECTION, id), { status, updatedAt: Date.now() })
+  // status muda = search precisa refletir também (pra busca por status funcionar)
+  const current = await getOrder(id)
+  const merged = { ...(current || {}), status, updatedAt: Date.now() }
+  const search = buildSearchTokens(merged as any)
+
+  await updateDoc(doc(db, COLLECTION, id), { status, updatedAt: Date.now(), search })
 }
 
 /**
@@ -168,13 +235,17 @@ export async function duplicateOrder(orderOrId: Order | string) {
 
   const payload: any = { ...data }
   payload.items = normalizeItems(payload.items || [])
-  payload.totals = payload.totals ?? calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
+  payload.totals =
+    payload.totals ?? calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
 
   const now = Date.now()
   payload.createdAt = now
   payload.updatedAt = now
   // mantém o status como orçamento ao duplicar
   payload.status = 'orcamento'
+
+  // ✅ Corrige a busca: gera tokens
+  payload.search = buildSearchTokens(payload)
 
   const ref = await addDoc(collection(db, COLLECTION), payload)
   return ref.id
