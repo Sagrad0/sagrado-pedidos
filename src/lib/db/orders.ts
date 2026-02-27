@@ -15,6 +15,14 @@ import type { Order, OrderItem, OrderFormData, OrderTotals, OrderStatus } from '
 
 const COLLECTION = 'orders'
 
+// Mapa de transições permitidas
+const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
+  orcamento: ['pedido', 'cancelado'],
+  pedido: ['faturado', 'cancelado'],
+  faturado: [],
+  cancelado: []
+}
+
 function normalizeDigits(value: string) {
   return (value || '').replace(/\D+/g, '')
 }
@@ -246,21 +254,26 @@ export async function updateOrder(id: string, data: Partial<Order>) {
 
 /**
  * Ao mudar para "pedido", gera PED- e incrementa order_seq (uma vez).
+ * Agora com validação de transições permitidas.
  */
-export async function updateOrderStatus(id: string, status: OrderStatus | string) {
+export async function updateOrderStatus(id: string, status: OrderStatus) {
   await ensureAuthReady()
   const db = getDbInstance()
 
   const current = await getOrder(id)
   if (!current) throw new Error('Pedido não encontrado.')
 
+  // Valida transição
+  const allowed = ALLOWED_TRANSITIONS[current.status]
+  if (!allowed.includes(status)) {
+    throw new Error(`Transição inválida: ${current.status} → ${status}`)
+  }
+
   const next: any = { status, updatedAt: Date.now() }
 
-  if (status === 'pedido') {
-    if (!(current as any).orderNumber) {
-      const seq = await incrementCounter('order_seq')
-      next.orderNumber = `PED-${String(seq).padStart(6, '0')}`
-    }
+  if (status === 'pedido' && current.status === 'orcamento' && !current.orderNumber) {
+    const seq = await incrementCounter('order_seq')
+    next.orderNumber = `PED-${String(seq).padStart(6, '0')}`
   }
 
   const merged = { ...(current as any), ...next }
