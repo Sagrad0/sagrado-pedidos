@@ -224,8 +224,8 @@ export async function updateOrder(id: string, data: Partial<Order>) {
 }
 
 /**
- * ✅ CORREÇÃO: ao mudar para "pedido", gera PED-xxxxxx e incrementa contador.
- * - Só gera uma vez (se já existir orderNumber, não mexe).
+ * ✅ AQUI É A CORREÇÃO DO TEU BUG:
+ * - mudar pra "pedido" precisa gerar PED- e incrementar order_seq (uma vez).
  */
 export async function updateOrderStatus(id: string, status: OrderStatus | string) {
   await ensureAuthReady()
@@ -236,13 +236,14 @@ export async function updateOrderStatus(id: string, status: OrderStatus | string
 
   const next: any = { status, updatedAt: Date.now() }
 
-  // transição: ORÇAMENTO -> PEDIDO (gera orderNumber)
-  if (status === 'pedido' && !(current as any).orderNumber) {
-    const seq = await incrementCounter('order_seq')
-    next.orderNumber = `PED-${String(seq).padStart(6, '0')}`
+  if (status === 'pedido') {
+    // só gera uma vez
+    if (!(current as any).orderNumber) {
+      const seq = await incrementCounter('order_seq')
+      next.orderNumber = `PED-${String(seq).padStart(6, '0')}`
+    }
   }
 
-  // atualiza search junto
   const merged = { ...(current as any), ...next }
   next.search = buildSearchTokens(merged)
 
@@ -254,6 +255,7 @@ export async function duplicateOrder(orderOrId: Order | string) {
   const db = getDbInstance()
 
   let orderData: Order | null
+
   if (typeof orderOrId === 'string') {
     orderData = await getOrder(orderOrId)
     if (!orderData) throw new Error('Pedido não encontrado para duplicar.')
@@ -273,7 +275,8 @@ export async function duplicateOrder(orderOrId: Order | string) {
   payload.createdAt = now
   payload.updatedAt = now
   payload.status = 'orcamento'
-  payload.orderNumber = undefined // duplicado volta como orçamento
+  payload.orderNumber = undefined
+
   payload.search = buildSearchTokens(payload)
 
   const ref = await addDoc(collection(db, COLLECTION), payload)
