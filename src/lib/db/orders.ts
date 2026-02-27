@@ -18,39 +18,67 @@ function normalizeDigits(value: string) {
   return (value || '').replace(/\D+/g, '')
 }
 
-function buildSearchTokens(o: Partial<Order>): string[] {
-  const tokens: string[] = []
-  const push = (v?: any) => {
-    if (v === undefined || v === null) return
-    const s = String(v).trim().toLowerCase()
-    if (!s) return
-    tokens.push(s)
-    const digits = normalizeDigits(s)
-    if (digits && digits !== s) tokens.push(digits)
-  }
+function normalizeText(value: string) {
+  return (value || '')
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
 
-  push(o.orderNumber)
-  push(o.budgetNumber)
-  push(o.status)
-  push(o.customerId)
-  push(o.notes)
+function addPrefixes(set: Set<string>, token: string, min = 2, max = 12) {
+  const t = token.trim()
+  if (!t) return
+  const upper = Math.min(max, t.length)
+  for (let i = min; i <= upper; i++) set.add(t.slice(0, i))
+}
+
+function pushToken(set: Set<string>, raw?: any) {
+  if (raw === undefined || raw === null) return
+  const t = normalizeText(String(raw))
+  if (!t) return
+
+  set.add(t)
+  addPrefixes(set, t)
+
+  t.split(/\s+/g).forEach((w) => {
+    if (!w) return
+    set.add(w)
+    addPrefixes(set, w)
+  })
+
+  const d = normalizeDigits(String(raw))
+  if (d) {
+    set.add(d)
+    addPrefixes(set, d, 3, 12)
+  }
+}
+
+function buildSearchTokens(o: Partial<Order>): string[] {
+  const set = new Set<string>()
+
+  pushToken(set, (o as any).orderNumber)
+  pushToken(set, (o as any).budgetNumber)
+  pushToken(set, (o as any).status)
+  pushToken(set, (o as any).customerId)
+  pushToken(set, (o as any).notes)
 
   const cs: any = (o as any).customerSnapshot || {}
-  push(cs.name)
-  push(cs.legalName)
-  push(cs.doc)
-  push(cs.phone)
-  push(cs.email)
-  push(cs.address) // legado (string)
+  pushToken(set, cs.name)
+  pushToken(set, cs.legalName)
+  pushToken(set, cs.doc)
+  pushToken(set, cs.phone)
+  pushToken(set, cs.email)
 
   const items: any[] = (o as any).items || []
   items.forEach((it) => {
     const ps = it?.productSnapshot || {}
-    push(ps.sku)
-    push(ps.name)
+    pushToken(set, ps.sku)
+    pushToken(set, ps.name)
   })
 
-  return Array.from(new Set(tokens))
+  return Array.from(set)
 }
 
 function normalizeItems(items: any[]): OrderItem[] {
@@ -96,9 +124,6 @@ export async function getAllOrders(): Promise<Order[]> {
   return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
 }
 
-/**
- * ✅ FUNÇÃO QUE FALTAVA (e o build quebra sem ela)
- */
 export async function getOrdersByStatus(status: OrderStatus): Promise<Order[]> {
   await ensureAuthReady()
   const db = getDbInstance()
@@ -113,18 +138,14 @@ export async function getOrdersByStatus(status: OrderStatus): Promise<Order[]> {
   return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
 }
 
-/**
- * Busca por token (array-contains).
- * Também busca por dígitos (telefone/doc) e deduplica.
- */
 export async function searchOrders(term: string): Promise<Order[]> {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  const t = (term || '').trim().toLowerCase()
+  const t = normalizeText(term || '')
   if (!t) return []
 
-  const tDigits = normalizeDigits(t)
+  const tDigits = normalizeDigits(term || '')
 
   const q1 = query(collection(db, COLLECTION), where('search', 'array-contains', t))
   const snap1 = await getDocs(q1)
@@ -180,10 +201,7 @@ export async function updateOrder(id: string, data: Partial<Order>) {
 
   const payload: any = { ...data }
 
-  if (payload.items) {
-    payload.items = normalizeItems(payload.items)
-  }
-
+  if (payload.items) payload.items = normalizeItems(payload.items)
   payload.updatedAt = Date.now()
 
   const touchesSearch =
@@ -233,8 +251,7 @@ export async function duplicateOrder(orderOrId: Order | string) {
   const payload: any = { ...data }
   payload.items = normalizeItems(payload.items || [])
   payload.totals =
-    payload.totals ??
-    calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
+    payload.totals ?? calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
 
   const now = Date.now()
   payload.createdAt = now
