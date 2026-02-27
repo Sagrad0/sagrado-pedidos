@@ -5,6 +5,7 @@ import {
   addDoc,
   doc,
   updateDoc,
+  deleteDoc,
   query,
   where,
   orderBy,
@@ -42,7 +43,7 @@ function pushToken(set: Set<string>, raw?: any) {
   set.add(t)
   addPrefixes(set, t)
 
-  // palavras separadas
+  // palavras separadas (ex.: "granel boa viagem")
   t.split(/\s+/g).forEach((w) => {
     if (!w) return
     set.add(w)
@@ -92,6 +93,11 @@ export async function getAllCustomers(): Promise<Customer[]> {
   return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Customer[]
 }
 
+/**
+ * A UI usa "digitar pra filtrar rápido".
+ * Firestore array-contains precisa bater com token EXATO,
+ * então a gente gera prefixos e também busca por dígitos (tel/doc).
+ */
 export async function searchCustomers(term: string): Promise<Customer[]> {
   await ensureAuthReady()
   const db = getDbInstance()
@@ -156,4 +162,14 @@ export async function updateCustomer(id: string, data: Partial<Customer>) {
   }
 
   await updateDoc(doc(db, COLLECTION, id), payload)
+}
+
+/**
+ * ✅ FUNÇÃO QUE FALTAVA (e o build quebra sem ela)
+ */
+export async function deleteCustomer(id: string) {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  await deleteDoc(doc(db, COLLECTION, id))
 }
