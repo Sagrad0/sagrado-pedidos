@@ -121,6 +121,14 @@ export interface Order extends BaseEntity {
   totals: OrderTotals
   /** Observações do pedido */
   notes?: string
+
+  /** Condição de pagamento (dias). Obrigatório para PEDIDO; opcional em ORÇAMENTO; imutável em FATURADO. */
+  payment?: {
+    /** Ex.: [7] ou [7,14] ou [7,14,21] */
+    installments?: number[]
+    /** Ex.: "Sujeito à negociação" */
+    note?: string
+  }
 }
 
 export interface OrderFormData {
@@ -129,6 +137,11 @@ export interface OrderFormData {
   discount?: number
   freight?: number
   notes?: string
+
+  payment?: {
+    installments?: number[]
+    note?: string
+  }
 }
 
 // Counter types
