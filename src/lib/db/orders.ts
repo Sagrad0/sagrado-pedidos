@@ -20,7 +20,7 @@ const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   orcamento: ['pedido', 'cancelado'],
   pedido: ['faturado', 'cancelado'],
   faturado: [],
-  cancelado: []
+  cancelado: [],
 }
 
 function normalizeDigits(value: string) {
@@ -267,6 +267,15 @@ export async function updateOrderStatus(id: string, status: OrderStatus) {
   const allowed = ALLOWED_TRANSITIONS[current.status]
   if (!allowed.includes(status)) {
     throw new Error(`Transição inválida: ${current.status} → ${status}`)
+  }
+
+  // Regra: para converter ORC → PED, condição de pagamento precisa estar definida
+  if (
+    current.status === 'orcamento' &&
+    status === 'pedido' &&
+    !(current as any)?.payment?.installments?.length
+  ) {
+    throw new Error('Defina a condição de pagamento antes de converter em pedido.')
   }
 
   const next: any = { status, updatedAt: Date.now() }
