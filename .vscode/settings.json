@@ -1,0 +1,14 @@
+{
+  "typescript.preferences.includePackageJsonAutoImports": "on",
+  "typescript.suggest.autoImports": true,
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "files.associations": {
+    "*.css": "tailwindcss"
+  },
+  "emmet.includeLanguages": {
+    "typescriptreact": "html"
+  }
+}
