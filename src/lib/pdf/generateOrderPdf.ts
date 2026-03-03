@@ -11,9 +11,6 @@ import type { Order } from '@/types'
 import { formatAddress } from '@/lib/address'
 
 // ===== CONSTANTES =====
-const BRAND_PURPLE = rgb(75 / 255, 6 / 255, 82 / 255)
-const BRAND_GREEN = rgb(153 / 255, 178 / 255, 34 / 255)
-
 const A4_W = 595.28
 const A4_H = 841.89
 const M = 40
@@ -92,31 +89,12 @@ export async function generateOrderPdf(order: Order): Promise<Uint8Array> {
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
-  let y = A4_H - 95
-
-  // ===== LOGO (Sagrado) =====
-  try {
-    const logoRes = await fetch('/brand/sagrado-logo-negativo.png')
-    if (logoRes.ok) {
-      const bytes = await logoRes.arrayBuffer()
-      const logo = await pdfDoc.embedPng(bytes)
-      const logoW = 120
-      const logoH = (logo.height / logo.width) * logoW
-      // faixa roxa no topo + logo em negativo
-      page.drawRectangle({ x: 0, y: A4_H - 70, width: A4_W, height: 70, color: BRAND_PURPLE })
-      page.drawImage(logo, { x: M, y: A4_H - 55, width: logoW, height: logoH })
-    }
-  } catch {
-    // silencioso: PDF continua mesmo sem logo (offline)
-  }
+  let y = A4_H - M
 
   // ===== HEADER =====
-  const isOrc = order.status === 'orcamento'
-  const numOrc = safeStr((order as any).budgetNumber || '')
-  const numPed = safeStr((order as any).orderNumber || '')
-  const title = isOrc
-    ? `ORÇAMENTO ${numOrc}`
-    : `PEDIDO ${numPed || safeStr((order as any).budgetNumber || '')}`
+  const title = (order.status === 'orcamento')
+    ? `ORÇAMENTO ${safeStr((order as any).budgetNumber || '')}`
+    : `PEDIDO ${safeStr((order as any).orderNumber || (order as any).budgetNumber || '')}`
 
   page.drawText(title, {
     x: M,
@@ -158,226 +136,128 @@ export async function generateOrderPdf(order: Order): Promise<Uint8Array> {
   }
 
   // ===== CLIENTE =====
-  drawSectionTitle('CLIENTE', M, y)
-  y -= 12
+  drawSectionTitle('CLIENTE', M + 4, y)
+  y -= 10
 
-  const cs: any = (order as any).customerSnapshot || {}
-  drawKV('Nome', safeStr(cs.name || '-'), M, y, W)
-  y -= 11
+  const c: any = (order as any).customerSnapshot || {}
 
-  if (cs.legalName) {
-    drawKV('Razão social', safeStr(cs.legalName), M, y, W)
-    y -= 11
-  }
-
-  if (cs.doc) {
-    drawKV('Documento', safeStr(cs.doc), M, y, W)
-    y -= 11
-  }
-
-  if (cs.phone) {
-    drawKV('Telefone', safeStr(cs.phone), M, y, W)
-    y -= 11
-  }
-
-  if (cs.email) {
-    drawKV('Email', safeStr(cs.email), M, y, W)
-    y -= 11
-  }
-
-  const addrMain = (cs as any).addressMain || cs.address
-  if (addrMain) {
-    drawKV('Endereço', formatAddress(addrMain), M, y, W)
-    y -= 11
-  }
-
-  if ((cs as any).addressDelivery) {
-    drawKV('Entrega', formatAddress((cs as any).addressDelivery), M, y, W)
-    y -= 11
-  }
-
-  y -= 6
-
-  // ===== CONDIÇÃO DE PAGAMENTO / OBS =====
-  const payDays: number[] = Array.isArray((order as any)?.payment?.installments)
-    ? (order as any).payment.installments
-    : []
-  const payNote = safeStr((order as any)?.payment?.note || '')
-  const payText = payDays.length ? `${payDays.join(' / ')} dias` : '-'
-  drawSectionTitle('PAGAMENTO', M + 4, y + 12)
-
-  page.drawText(`Prazo: ${payText}`, {
-    x: M + 4,
-    y,
-    size: 8,
-    font,
-    color: rgb(0.2, 0.2, 0.2),
+  const blockH = 70
+  // bloco cinza
+  page.drawRectangle({
+    x: M,
+    y: y - blockH,
+    width: W,
+    height: blockH,
+    color: rgb(0.97, 0.97, 0.97),
+    borderColor: rgb(0.9, 0.9, 0.9),
+    borderWidth: 1,
   })
-  y -= 12
 
-  if (payNote) {
-    page.drawText(`Obs.: ${truncateText(payNote, 120)}`, {
-      x: M + 4,
-      y,
-      size: 8,
-      font,
-      color: rgb(0.2, 0.2, 0.2),
-    })
-    y -= 12
-  }
+  const x1 = M + SPACING.padding
+  const x2 = M + W / 2 + SPACING.padding
+  const topY = y - 14
 
-  // Observações gerais do pedido/orçamento
-  const notes = safeStr((order as any).notes || '')
-  if (notes) {
-    drawSectionTitle('OBSERVAÇÕES', M + 4, y + 12)
-    page.drawText(truncateText(notes, 200), {
-      x: M + 4,
-      y,
-      size: 8,
-      font,
-      color: rgb(0.2, 0.2, 0.2),
-    })
-    y -= 16
-  }
+  drawKV('Nome', safeStr(c.name), x1, topY, W / 2 - SPACING.padding * 2)
+  drawKV('Razão Social', safeStr((c as any).legalName), x1, topY - 18, W / 2 - SPACING.padding * 2)
+  drawKV('Documento', safeStr(c.doc), x1, topY - 36, W / 2 - SPACING.padding * 2)
+  drawKV('Endereço Principal', truncateText(formatAddress((c as any).addressMain ?? (c as any).address), 90), x1, topY - 54, W / 2 - SPACING.padding * 2)
 
-  // ===== ITENS =====
-  drawSectionTitle('ITENS DO PEDIDO', M, y)
-  y -= 12
+  drawKV('Telefone', safeStr(c.phone), x2, topY, W / 2 - SPACING.padding * 2)
+  drawKV('E-mail', safeStr(c.email), x2, topY - 18, W / 2 - SPACING.padding * 2)
+  drawKV('Endereço Entrega', truncateText(formatAddress((c as any).addressDelivery), 90), x2, topY - 36, W / 2 - SPACING.padding * 2)
 
-  // ===== TABLE SETUP =====
-  const colDefs = Object.values(TABLE_CONFIG.columns)
-  const widths = colDefs.map((c) => c.width)
+  y -= blockH + SPACING.sectionGap
+
+  // ===== TABLE =====
+  drawSectionTitle('ITENS DO PEDIDO', M + 4, y + 12)
+  y -= 20
+
+  const cols = Object.values(TABLE_CONFIG.columns)
+  const widths = cols.map((c) => c.width)
   const startX = M
-  const startY = y
-  const headerH = TABLE_CONFIG.headerHeight
-  const rowH = TABLE_CONFIG.rowHeight
-  const pad = TABLE_CONFIG.cellPadding
 
-  const drawCellText = (text: string, x: number, y: number, w: number, align: 'left' | 'right' = 'left') => {
-    const t = truncateText(safeStr(text), Math.max(1, Math.floor(w / 4)))
-    const size = TABLE_CONFIG.fontSize
-    const textW = font.widthOfTextAtSize(t, size)
+  const drawCell = (text: string, colIndex: number, rowY: number, isHeader = false) => {
+    const x = calculateColumnX(startX, widths, colIndex)
+    const w = widths[colIndex]
+    const h = isHeader ? TABLE_CONFIG.headerHeight : TABLE_CONFIG.rowHeight
 
-    let tx = x + pad
-    if (align === 'right') tx = x + w - pad - textW
+    // cell border
+    page.drawRectangle({
+      x,
+      y: rowY - h,
+      width: w,
+      height: h,
+      borderColor: rgb(0.85, 0.85, 0.85),
+      borderWidth: 1,
+      color: isHeader ? rgb(0.94, 0.94, 0.94) : rgb(1, 1, 1),
+    })
 
-    page.drawText(t, {
-      x: tx,
-      y: y + 5,
-      size,
-      font,
-      color: rgb(0.1, 0.1, 0.1),
+    const pad = TABLE_CONFIG.cellPadding
+    const maxChars = Math.max(3, Math.floor((w - pad * 2) / 4))
+
+    page.drawText(truncateText(text, maxChars), {
+      x: x + pad,
+      y: rowY - h + 6,
+      size: isHeader ? TABLE_CONFIG.headerFontSize : TABLE_CONFIG.fontSize,
+      font: isHeader ? fontBold : font,
+      color: rgb(0.15, 0.15, 0.15),
       maxWidth: w - pad * 2,
     })
   }
 
-  const drawHeader = () => {
-    page.drawRectangle({
-      x: startX,
-      y: startY - headerH,
-      width: W,
-      height: headerH,
-      color: rgb(0.95, 0.95, 0.95),
-      borderColor: rgb(0.8, 0.8, 0.8),
-      borderWidth: 1,
-    })
-
-    colDefs.forEach((c, i) => {
-      const x = calculateColumnX(startX, widths, i)
-      const label = c.label
-      page.drawText(label, {
-        x: x + pad,
-        y: startY - headerH + 7,
-        size: TABLE_CONFIG.headerFontSize,
-        font: fontBold,
-        color: rgb(0.2, 0.2, 0.2),
-        maxWidth: c.width - pad * 2,
-      })
-    })
+  const drawTableHeader = (rowY: number) => {
+    cols.forEach((c, idx) => drawCell(c.label, idx, rowY, true))
+    return rowY - TABLE_CONFIG.headerHeight
   }
 
-  drawHeader()
+  const drawTableRow = (rowY: number, row: string[]) => {
+    row.forEach((v, idx) => drawCell(v, idx, rowY, false))
+    return rowY - TABLE_CONFIG.rowHeight
+  }
+
+  y = drawTableHeader(y)
 
   const items = Array.isArray((order as any).items) ? (order as any).items : []
-  let rowY = startY - headerH
-
-  items.forEach((it: any, idx: number) => {
-    rowY -= rowH
-
-    // background + border
-    page.drawRectangle({
-      x: startX,
-      y: rowY,
-      width: W,
-      height: rowH,
-      color: rgb(1, 1, 1),
-      borderColor: rgb(0.9, 0.9, 0.9),
-      borderWidth: 1,
-    })
-
-    const ps = it?.productSnapshot || {}
-    const sku = safeStr(ps.sku || it.sku || '')
-    const name = safeStr(ps.name || it.name || '')
-    const unit = safeStr(ps.unit || it.unit || '')
+  items.forEach((it: any, index: number) => {
     const qty = safeNum(it.qty ?? it.quantity, 0)
     const unitPrice = safeNum(it.unitPrice ?? it.price, 0)
     const lineTotal = it.total != null ? safeNum(it.total, qty * unitPrice) : qty * unitPrice
 
-    const cells = [
-      { text: String(idx + 1), align: 'left' as const },
-      { text: sku, align: 'left' as const },
-      { text: name, align: 'left' as const },
-      { text: unit, align: 'left' as const },
-      { text: String(qty), align: 'right' as const },
-      { text: formatCurrency(unitPrice), align: 'right' as const },
-      { text: formatCurrency(lineTotal), align: 'right' as const },
+    const row = [
+      String(index + 1),
+      safeStr(it.productSnapshot?.sku ?? it.sku),
+      safeStr(it.productSnapshot?.name ?? it.name),
+      safeStr(it.productSnapshot?.unit ?? it.unit),
+      String(qty),
+      formatCurrency(unitPrice),
+      formatCurrency(lineTotal),
     ]
 
-    cells.forEach((cell, i) => {
-      const x = calculateColumnX(startX, widths, i)
-      const w = widths[i]
-      drawCellText(cell.text, x, rowY, w, cell.align)
-    })
+    y = drawTableRow(y, row)
+
+    // quebra página
+    if (y < M + 140) {
+      const newPage = pdfDoc.addPage([A4_W, A4_H])
+      ;(page as any) = newPage
+      y = A4_H - M
+      y = drawTableHeader(y)
+    }
   })
 
-  y = rowY - 18
+  // ===== TOTAL =====
+  y -= 18
+  drawSectionTitle('TOTAL', M + 4, y + 12)
+  y -= 8
 
-  // ===== TOTAIS =====
-  const total = sumOrderTotal(order as any)
-  const discount = safeNum((order as any)?.totals?.discount, 0)
-  const freight = safeNum((order as any)?.totals?.freight, 0)
-
-  const finalTotal = safeNum((order as any)?.totals?.total, total - discount + freight)
-
-  const totalsX = M + W - 200
-  const line = (label: string, value: string) => {
-    page.drawText(label, { x: totalsX, y, size: 9, font, color: rgb(0.2, 0.2, 0.2) })
-    page.drawText(value, {
-      x: totalsX + 120,
-      y,
-      size: 9,
-      font: fontBold,
-      color: rgb(0.1, 0.1, 0.1),
-    })
-    y -= 12
-  }
-
-  line('Subtotal', formatCurrency(total))
-  line('Desconto', formatCurrency(discount))
-  line('Frete', formatCurrency(freight))
-  y -= 4
-  line('Total', formatCurrency(finalTotal))
-
-  // ===== FOOTER (marca) =====
-  page.drawRectangle({ x: 0, y: 0, width: A4_W, height: 26, color: BRAND_GREEN })
-  page.drawText('Sagrado', {
+  const total = sumOrderTotal(order)
+  page.drawText(`Total: ${formatCurrency(total)}`, {
     x: M,
-    y: 9,
-    size: 9,
+    y,
+    size: 11,
     font: fontBold,
-    color: rgb(1, 1, 1),
+    color: rgb(0.1, 0.1, 0.1),
   })
 
-  const pdfBytes = await pdfDoc.save()
-  return pdfBytes
+  const bytes = await pdfDoc.save()
+  return bytes
 }

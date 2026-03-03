@@ -25,23 +25,17 @@ function fmtDate(ts: number) {
 }
 
 function statusLabel(s: OrderStatus) {
-  switch (s) {
-    case 'orcamento': return 'Orçamento'
-    case 'pedido': return 'Pedido'
-    case 'faturado': return 'Faturado'
-    case 'cancelado': return 'Cancelado'
-    default: return String(s)
-  }
+  if (s === 'orcamento') return 'Orçamento'
+  if (s === 'pedido') return 'Pedido'
+  if (s === 'faturado') return 'Faturado'
+  return String(s)
 }
 
 function pillClass(s: OrderStatus) {
-  switch (s) {
-    case 'orcamento': return 'pill pill-yellow'
-    case 'pedido': return 'pill pill-blue'
-    case 'faturado': return 'pill pill-green'
-    case 'cancelado': return 'pill pill-gray'
-    default: return 'pill pill-gray'
-  }
+  if (s === 'orcamento') return 'pill pill-yellow'
+  if (s === 'pedido') return 'pill pill-blue'
+  if (s === 'faturado') return 'pill pill-green'
+  return 'pill pill-gray'
 }
 
 type Tab = 'todos' | 'orcamento' | 'pedido' | 'faturado'
@@ -60,18 +54,17 @@ export default function OrdersPage() {
       try {
         let data: Order[] = []
 
+        // base por status
         if (tab === 'todos') data = await getAllOrders()
         else data = await getOrdersByStatus(tab)
 
+        // busca
         if (q.trim()) {
           const searched = await searchOrders(q)
           data = tab === 'todos' ? searched : searched.filter((o) => o.status === tab)
         }
 
-        // Filtra cancelados no frontend (não usa where !=)
-        const visible = data.filter(o => o.status !== 'cancelado')
-
-        if (alive) setOrders(visible)
+        if (alive) setOrders(data)
       } finally {
         if (alive) setLoading(false)
       }
@@ -92,6 +85,7 @@ export default function OrdersPage() {
 
   return (
     <div className="page">
+      {/* Header */}
       <div className="page-header">
         <div>
           <div className="page-subtitle">Pedidos</div>
@@ -106,6 +100,7 @@ export default function OrdersPage() {
         </Link>
       </div>
 
+      {/* Filtros */}
       <div className="card">
         <div className="card-body space-y-4">
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
@@ -162,6 +157,7 @@ export default function OrdersPage() {
         </div>
       </div>
 
+      {/* Tabela */}
       <div className="card">
         <div className="card-header">
           <div className="card-title">Registros</div>
@@ -197,11 +193,7 @@ export default function OrdersPage() {
                 </tr>
               ) : (
                 orders.map((o) => {
-                  const isPedido = o.status === 'pedido' || o.status === 'faturado'
-                  const number = isPedido
-                    ? o.orderNumber || o.budgetNumber || '—'
-                    : o.budgetNumber || o.orderNumber || '—'
-
+                  const number = o.budgetNumber || o.orderNumber || '—'
                   const client = o.customerSnapshot?.name ?? '—'
                   const phone = o.customerSnapshot?.phone ?? ''
                   const total = Number(o.totals?.total ?? 0) || 0

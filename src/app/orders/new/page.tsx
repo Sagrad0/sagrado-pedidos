@@ -4,8 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Address, Customer, OrderFormData, Product } from '@/types'
 import { getAllCustomers } from '@/lib/db/customers'
 import { getAllProducts } from '@/lib/db/products'
-import { createOrder } from '@/lib/db/orders'
-import { incrementCounter } from '@/lib/db/counters'
+import { createOrderFromUiPayload } from '@/lib/db/orders'
 import { formatAddress, toAddressObject } from '@/lib/address'
 
 type OrderItemDraft = OrderFormData['items'][number]
@@ -13,14 +12,6 @@ type OrderItemDraft = OrderFormData['items'][number]
 function brl(v: number) {
   const n = Number.isFinite(v) ? v : 0
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n)
-}
-
-function stripUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
-  const out: any = {}
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) out[k] = v
-  }
-  return out
 }
 
 export default function NewOrderPage() {
@@ -152,48 +143,26 @@ export default function NewOrderPage() {
   }
 
   const handleSubmit = async () => {
-    if (!selectedCustomerId) return alert('Selecione um cliente.')
-    if (items.length === 0) return alert('Adicione ao menos 1 item.')
-
     setSaving(true)
 
     try {
       const c = selectedCustomer
-      const seq = await incrementCounter('budget_seq')
-      const budgetNumber = `ORC-${String(seq).padStart(6, '0')}`
-
-      const payload: any = {
-        status: 'orcamento',
-        budgetNumber,
+      const payload = {
         customerId: selectedCustomerId,
-        customerSnapshot: c
-          ? (stripUndefined({
-              name: c.name,
-              legalName: (c as any).legalName || undefined,
-              doc: c.doc || undefined,
-              phone: c.phone,
-              email: c.email || undefined,
-              addressMain: toAddressObject((c as any).addressMain || c.address || undefined),
-              addressDelivery: toAddressObject(deliveryAddress || (c as any).addressDelivery || undefined),
-              address: c.address || undefined,
-            }) as any)
-          : undefined,
+        customer: c,
+        deliveryAddress,
         items: items.map((i) => ({
           productId: i.productId,
           productSnapshot: i.productSnapshot,
           qty: i.qty,
           unitPrice: i.unitPrice,
         })),
-        totals: {
-          subtotal: totals.subtotal,
-          discount: 0,
-          freight: 0,
-          total: totals.total,
-        },
+        discount: 0,
+        freight: 0,
         notes: '',
       }
 
-      const id = await createOrder(payload)
+      const id = await createOrderFromUiPayload(payload)
       window.location.href = `/orders/${id}`
     } catch (err: any) {
       console.error('[orders/new.handleSubmit] FAILED', err)
