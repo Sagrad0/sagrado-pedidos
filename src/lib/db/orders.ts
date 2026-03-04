@@ -65,7 +65,7 @@ export async function updateOrderStatus(id: string, status: string) {
   }
 
   /**
-   * CONVERSÃO ORÇAMENTO → PEDIDO
+   * Conversão ORC → PED
    */
 
   if (from === 'orcamento' && to === 'pedido') {
@@ -81,25 +81,20 @@ export async function updateOrderStatus(id: string, status: string) {
 
 /**
  * DUPLICAR PEDIDO
+ * Agora recebe o objeto Order completo
  */
 
-export async function duplicateOrder(id: string) {
+export async function duplicateOrder(order: Order) {
   await ensureAuthReady()
 
   const db = getDbInstance()
-
-  const original = await getOrder(id)
-
-  if (!original) {
-    throw new Error('Pedido não encontrado.')
-  }
 
   const seq = await incrementCounter('budget_seq')
 
   const budgetNumber = `ORC-${String(seq).padStart(6, '0')}`
 
   const payload: any = {
-    ...original,
+    ...order,
     budgetNumber,
     orderNumber: null,
     status: 'orcamento',
