@@ -72,7 +72,7 @@ export interface ProductFormData {
 }
 
 // Order types
-export type OrderStatus = 'orcamento' | 'pedido' | 'faturado'
+export type OrderStatus = 'orcamento' | 'pedido' | 'faturado' | 'cancelado'
 
 export interface OrderItem {
   productId: string

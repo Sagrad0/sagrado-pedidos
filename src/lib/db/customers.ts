@@ -72,6 +72,14 @@ export async function getAllCustomers(): Promise<Customer[]> {
   return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Customer[]
 }
 
+export async function getCustomersCount(): Promise<number> {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const snapshot = await getDocs(collection(db, COLLECTION))
+  return snapshot.size
+}
+
 export async function searchCustomers(term: string): Promise<Customer[]> {
   await ensureAuthReady()
   const db = getDbInstance()
@@ -153,5 +161,15 @@ export async function deleteCustomer(id: string) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  await deleteDoc(doc(db, COLLECTION, id))
+  try {
+    await deleteDoc(doc(db, COLLECTION, id))
+  } catch (err: any) {
+    console.error('[customers.deleteCustomer] FAILED', {
+      id,
+      code: err?.code,
+      message: err?.message,
+      name: err?.name,
+    })
+    throw err
+  }
 }

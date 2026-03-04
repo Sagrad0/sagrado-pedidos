@@ -110,6 +110,8 @@ export default function OrderDetailsPage() {
     try {
       await updateOrderStatus((order as any).id, status)
       await reload()
+    } catch (err: any) {
+      alert(err?.message ?? 'Erro ao alterar status.')
     } finally {
       setBusy(false)
     }
@@ -183,6 +185,7 @@ export default function OrderDetailsPage() {
             <option value="orcamento">Orçamento</option>
             <option value="pedido">Pedido</option>
             <option value="faturado">Faturado</option>
+            <option value="cancelado">Cancelado</option>
           </select>
         </div>
       </div>

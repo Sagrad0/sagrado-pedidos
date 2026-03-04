@@ -143,6 +143,22 @@ export default function NewOrderPage() {
   }
 
   const handleSubmit = async () => {
+    // Validações de segurança antes de tocar no Firestore
+    if (!selectedCustomerId || !selectedCustomer) {
+      alert('Selecione um cliente antes de salvar o orçamento.')
+      return
+    }
+
+    if (!items || items.length === 0) {
+      alert('Adicione pelo menos um item ao orçamento antes de salvar.')
+      return
+    }
+
+    if (!Number.isFinite(totals.total) || totals.total <= 0) {
+      alert('O orçamento precisa ter um valor total maior que zero.')
+      return
+    }
+
     setSaving(true)
 
     try {
