@@ -6,89 +6,62 @@ import {
   doc,
   updateDoc,
   query,
-  where,
   orderBy,
+  where,
+  limit,
 } from 'firebase/firestore'
+
 import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
-import type { Order, OrderItem, OrderFormData, OrderTotals, Customer, Address } from '@/types'
+import type { Address, Customer, Order } from '@/types'
 import { incrementCounter } from '@/lib/db/counters'
-import { toAddressObject } from '@/lib/address'
 import { canTransition } from '@/lib/orders/workflow'
+import { toAddressObject } from '@/lib/address'
 
 const COLLECTION = 'orders'
 
-const MAX_ORDER_ITEMS = 100
-
-function normalizeDigits(v: string) {
-  return (v || '').replace(/\D+/g, '')
-}
-
-/** Gera tokens para busca por array-contains (número, cliente, telefone, doc, notas). */
-function buildOrderSearchTokens(order: Partial<Order> & { customerSnapshot?: Order['customerSnapshot'] }): string[] {
-  const tokens: string[] = []
-  const push = (v?: string | null) => {
-    if (v == null) return
-    const s = String(v).trim().toLowerCase()
-    if (!s) return
-    tokens.push(s)
-    const digits = normalizeDigits(s)
-    if (digits && digits !== s) tokens.push(digits)
-  }
-
-  push(order.budgetNumber)
-  push(order.orderNumber)
-  const cs = order.customerSnapshot
-  if (cs) {
-    push(cs.name)
-    push((cs as any).legalName)
-    push(cs.doc)
-    push(cs.phone)
-    push(cs.email)
-  }
-  if (order.notes) {
-    const words = String(order.notes).trim().toLowerCase().split(/\s+/)
-    words.forEach((w) => w && tokens.push(w))
-  }
-
-  return Array.from(new Set(tokens))
-}
-
 /**
- * Remove apenas `undefined` em qualquer profundidade.
- * Mantém null, arrays, objetos aninhados e primitivos.
- * Firestore não aceita undefined; null é aceito.
+ * Hash leve (FNV-1a) para gerar chave idempotente sem depender de crypto.
+ * Evita pedidos duplicados por clique duplo / retry de rede.
  */
-function removeUndefined<T>(value: T): T {
-  if (value === undefined) {
-    return value
+function fnv1a(input: string) {
+  let h = 0x811c9dc5
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
   }
-  if (value === null) {
-    return value
-  }
-  if (Array.isArray(value)) {
-    return value.map((v) => removeUndefined(v)) as T
-  }
-  if (typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (v === undefined) continue
-      out[k] = removeUndefined(v)
-    }
-    return out as T
-  }
-  return value
+  // unsigned 32-bit -> base36
+  return (h >>> 0).toString(36)
 }
 
-function normalizeItems(items: any[]): OrderItem[] {
+function buildCustomerSnapshot(customer: Customer | null, deliveryAddress?: Address | null) {
+  if (!customer) return null
+
+  const addressMain = toAddressObject(customer.addressMain ?? customer.address ?? null)
+  const addressDelivery =
+    toAddressObject(deliveryAddress ?? customer.addressDelivery ?? null) ?? undefined
+
+  return {
+    name: customer.name || '',
+    legalName: customer.legalName || undefined,
+    doc: customer.doc || undefined,
+    phone: customer.phone || '',
+    email: customer.email || undefined,
+    addressMain: addressMain ?? undefined,
+    addressDelivery: addressDelivery ?? undefined,
+    // legado
+    address: typeof customer.address === 'string' ? customer.address : undefined,
+  }
+}
+
+function normalizeItems(items: any[]) {
   const list = Array.isArray(items) ? items : []
   return list.map((it) => {
     const qty = Number(it.qty ?? it.quantity ?? 0)
     const unitPrice = Number(it.unitPrice ?? it.price ?? 0)
-    const total = typeof it.total === 'number' ? it.total : qty * unitPrice
+    const total = qty * unitPrice
 
-    // mantém schema "novo" (qty/unitPrice) e compatibilidade (quantity/price)
     return {
-      productId: String(it.productId),
+      productId: String(it.productId || ''),
       productSnapshot: it.productSnapshot ?? {
         sku: it.sku ?? '',
         name: it.name ?? '',
@@ -98,44 +71,23 @@ function normalizeItems(items: any[]): OrderItem[] {
       qty,
       unitPrice,
       total,
-      // legado (não usado pelos types, mas pode existir nos docs antigos)
+      // compat com legado
       ...(it.quantity != null ? { quantity: qty } : {}),
       ...(it.price != null ? { price: unitPrice } : {}),
-    } as any as OrderItem
+    }
   })
 }
 
-function calcTotals(items: OrderItem[], discount = 0, freight = 0): OrderTotals {
-  const subtotal = items.reduce((acc, it) => acc + Number(it.total ?? 0), 0)
+function calcTotals(items: any[], discount = 0, freight = 0) {
+  const subtotal = items.reduce((acc: number, it: any) => acc + Number(it.total ?? 0), 0)
   const d = Number(discount ?? 0) || 0
   const f = Number(freight ?? 0) || 0
-  const total = subtotal - d + f
-  return { subtotal, discount: d, freight: f, total }
-}
-
-// Alias interno usado em pontos antigos do código
-function stripUndefined<T extends Record<string, any>>(obj: T): Partial<T> {
-  return removeUndefined(obj)
-}
-
-export interface CreateOrderFromUiPayload {
-  customerId: string
-  customer: Customer | null
-  deliveryAddress: Address | null
-  items: {
-    productId: string
-    productSnapshot: {
-      sku?: string
-      name?: string
-      unit?: string
-      weight?: number
-    }
-    qty: number
-    unitPrice: number
-  }[]
-  discount?: number
-  freight?: number
-  notes?: string
+  return {
+    subtotal,
+    discount: d,
+    freight: f,
+    total: subtotal - d + f,
+  }
 }
 
 export async function getAllOrders(): Promise<Order[]> {
@@ -145,42 +97,10 @@ export async function getAllOrders(): Promise<Order[]> {
   const q = query(collection(db, COLLECTION), orderBy('createdAt', 'desc'))
   const snapshot = await getDocs(q)
 
-  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
-}
-
-export async function getOrdersCount(): Promise<number> {
-  await ensureAuthReady()
-  const db = getDbInstance()
-
-  const snapshot = await getDocs(collection(db, COLLECTION))
-  return snapshot.size
-}
-
-export async function getOrdersByStatus(status: string): Promise<Order[]> {
-  await ensureAuthReady()
-  const db = getDbInstance()
-
-  const q = query(
-    collection(db, COLLECTION),
-    where('status', '==', status),
-    orderBy('createdAt', 'desc')
-  )
-
-  const snapshot = await getDocs(q)
-  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
-}
-
-export async function searchOrders(term: string): Promise<Order[]> {
-  await ensureAuthReady()
-  const db = getDbInstance()
-
-  const q = query(
-    collection(db, COLLECTION),
-    where('search', 'array-contains', term.toLowerCase())
-  )
-
-  const snapshot = await getDocs(q)
-  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as Order[]
+  return snapshot.docs.map((d) => ({
+    id: d.id,
+    ...d.data(),
+  })) as Order[]
 }
 
 export async function getOrder(id: string): Promise<Order | null> {
@@ -191,187 +111,11 @@ export async function getOrder(id: string): Promise<Order | null> {
   const snap = await getDoc(ref)
 
   if (!snap.exists()) return null
-  return { id: snap.id, ...snap.data() } as Order
-}
 
-export async function createOrderFromUiPayload(input: CreateOrderFromUiPayload) {
-  await ensureAuthReady()
-
-  const { customerId, customer, deliveryAddress, items, discount = 0, freight = 0, notes = '' } = input
-
-  if (!customerId || !customer) {
-    throw new Error('Selecione um cliente.')
-  }
-
-  const itemList = Array.isArray(items) ? items : []
-  if (itemList.length === 0) {
-    throw new Error('Adicione ao menos 1 item.')
-  }
-
-  if (itemList.length > MAX_ORDER_ITEMS) {
-    throw new Error('Pedido excede limite máximo de itens.')
-  }
-
-  const sanitizedItems = itemList.map((i) => {
-    const qty = Number(i.qty ?? 0)
-    const unitPrice = Number(i.unitPrice ?? 0)
-    if (!Number.isFinite(qty) || qty <= 0) {
-      throw new Error('Itens do pedido inválidos: quantidade deve ser um número maior que zero.')
-    }
-    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-      throw new Error('Itens do pedido inválidos: preço unitário deve ser um número maior ou igual a zero.')
-    }
-    return {
-      productId: String(i.productId),
-      productSnapshot: {
-        sku: i.productSnapshot?.sku ?? '',
-        name: i.productSnapshot?.name ?? '',
-        unit: i.productSnapshot?.unit ?? '',
-        weight: i.productSnapshot?.weight ?? undefined,
-      },
-      qty,
-      unitPrice,
-    }
-  })
-
-  const hasInvalidItem = sanitizedItems.some(
-    (i) => !Number.isFinite(i.qty) || i.qty <= 0 || !Number.isFinite(i.unitPrice) || i.unitPrice < 0
-  )
-  if (hasInvalidItem) {
-    throw new Error('Itens do pedido inválidos.')
-  }
-
-  const seq = await incrementCounter('budget_seq')
-  const budgetNumber = `ORC-${String(seq).padStart(6, '0')}`
-
-  const mainAddress =
-    (customer as any).addressMain ||
-    (customer as any).address ||
-    (customer as any).addressDelivery ||
-    undefined
-
-  const deliveryAddr =
-    deliveryAddress ||
-    toAddressObject((customer as any).addressDelivery || undefined) ||
-    null
-
-  const customerSnapshot = stripUndefined({
-    name: customer.name,
-    legalName: (customer as any).legalName || undefined,
-    doc: customer.doc || undefined,
-    phone: customer.phone,
-    email: customer.email || undefined,
-    addressMain: toAddressObject(mainAddress || undefined),
-    addressDelivery: deliveryAddr,
-    address: (customer as any).address || undefined,
-  }) as Order['customerSnapshot']
-
-  const normalizedItems = normalizeItems(sanitizedItems)
-  const totals = calcTotals(normalizedItems, discount, freight)
-
-  const payload: Partial<Order> = {
-    status: 'orcamento',
-    budgetNumber,
-    customerId,
-    customerSnapshot,
-    items: normalizedItems,
-    totals,
-    notes,
-  }
-
-  const cleanedPayload = removeUndefined(payload) as Partial<Order>
-  return await createOrder(cleanedPayload)
-}
-
-/**
- * Compatível com o app:
- * - orders/new chama createOrder(payload) onde payload é OrderFormData (items sem total)
- * - Aqui normalizamos itens, calculamos total e garantimos campos mínimos do pedido
- */
-export async function createOrder(data: Partial<Order> | OrderFormData) {
-  await ensureAuthReady()
-  const db = getDbInstance()
-
-  const raw: any = { ...data }
-
-  // itens (proteção contra null/não-array)
-  raw.items = normalizeItems(Array.isArray(raw.items) ? raw.items : [])
-
-  if (raw.items.length > MAX_ORDER_ITEMS) {
-    throw new Error('Pedido excede limite máximo de itens.')
-  }
-
-  // totals
-  const discount = Number(raw.discount ?? raw.totals?.discount ?? 0) || 0
-  const freight = Number(raw.freight ?? raw.totals?.freight ?? 0) || 0
-  raw.totals = raw.totals ?? calcTotals(raw.items, discount, freight)
-
-  if (!raw.totals || typeof raw.totals !== 'object') {
-    throw new Error('Totais do pedido inválidos.')
-  }
-  if (!Number.isFinite(raw.totals.total)) {
-    throw new Error('Totais do pedido inválidos.')
-  }
-  if (!Number.isFinite(raw.totals.subtotal)) {
-    raw.totals.subtotal = raw.items.reduce((acc: number, it: OrderItem) => acc + Number(it.total ?? 0), 0)
-  }
-
-  // createdAt/updatedAt -> epoch ms (pra UI formatar sem quebrar)
-  const now = Date.now()
-  raw.createdAt = typeof raw.createdAt === 'number' ? raw.createdAt : now
-  raw.updatedAt = now
-
-  // Campo search para searchOrders() (array-contains)
-  raw.search = buildOrderSearchTokens(raw)
-
-  const payload = removeUndefined(raw)
-
-  try {
-    const ref = await addDoc(collection(db, COLLECTION), payload)
-    return ref.id
-  } catch (err: any) {
-    console.error('[orders.createOrder] FAILED', {
-      code: err?.code,
-      message: err?.message,
-      name: err?.name,
-    })
-    throw err
-  }
-}
-
-export async function updateOrder(id: string, data: Partial<Order>) {
-  await ensureAuthReady()
-  const db = getDbInstance()
-
-  const ref = doc(db, COLLECTION, id)
-  const existingSnap = await getDoc(ref)
-  const existing = existingSnap.exists() ? (existingSnap.data() as Partial<Order>) : {}
-
-  const raw: any = { ...existing, ...data }
-
-  // se update vier com items, normaliza também (mantém coerência)
-  if (raw.items !== undefined) {
-    raw.items = normalizeItems(Array.isArray(raw.items) ? raw.items : [])
-    if (raw.items.length > MAX_ORDER_ITEMS) {
-      throw new Error('Pedido excede limite máximo de itens.')
-    }
-  }
-
-  raw.updatedAt = Date.now()
-  raw.search = buildOrderSearchTokens(raw)
-
-  const payload = removeUndefined(raw)
-
-  try {
-    await updateDoc(ref, payload)
-  } catch (err: any) {
-    console.error('[orders.updateOrder] FAILED', {
-      code: err?.code,
-      message: err?.message,
-      name: err?.name,
-    })
-    throw err
-  }
+  return {
+    id: snap.id,
+    ...snap.data(),
+  } as Order
 }
 
 export async function updateOrderStatus(id: string, status: string) {
@@ -381,75 +125,157 @@ export async function updateOrderStatus(id: string, status: string) {
   const current = await getOrder(id)
   if (!current) throw new Error('Pedido não encontrado.')
 
-  const from = String(current.status ?? '').trim()
-  const to = String(status ?? '').trim()
+  const from = String(current.status ?? '')
+  const to = String(status ?? '')
 
   if (!canTransition(from, to)) {
     throw new Error(`Transição inválida: ${from} → ${to}`)
   }
 
-  const payload = removeUndefined({ status: to, updatedAt: Date.now() })
-  try {
-    await updateDoc(doc(db, COLLECTION, id), payload)
-  } catch (err: any) {
-    console.error('[orders.updateOrderStatus] FAILED', {
-      code: err?.code,
-      message: err?.message,
-      name: err?.name,
-    })
-    throw err
+  const payload: any = {
+    status: to,
+    updatedAt: Date.now(),
   }
+
+  /**
+   * CONVERSÃO ORC → PED
+   * Quando orçamento vira pedido, gera número PED mantendo o mesmo documento.
+   */
+  if (from === 'orcamento' && to === 'pedido') {
+    if (!current.orderNumber) {
+      const seq = await incrementCounter('order_seq')
+      payload.orderNumber = `PED-${String(seq).padStart(6, '0')}`
+    }
+  }
+
+  await updateDoc(doc(db, COLLECTION, id), payload)
 }
 
 /**
- * Mantém compatibilidade:
- * - Em alguns lugares: duplicateOrder(order.id) (string)
- * - Em outros: duplicateOrder(order) (Order)
+ * DUPLICAR PEDIDO
+ * Recebe o objeto Order completo (como a UI já chama).
+ * Regra: duplicar sempre gera um novo ORC e volta status para 'orcamento'.
  */
-export async function duplicateOrder(orderOrId: Order | string) {
+export async function duplicateOrder(order: Order) {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  let orderData: Order | null
-
-  if (typeof orderOrId === 'string') {
-    orderData = await getOrder(orderOrId)
-    if (!orderData) throw new Error('Pedido não encontrado para duplicar.')
-  } else {
-    orderData = orderOrId
-  }
-
-  const { id, ...data } = orderData
-
-  const payload: any = { ...data }
-  payload.items = normalizeItems(Array.isArray(payload.items) ? payload.items : [])
-  if (payload.items.length > MAX_ORDER_ITEMS) {
-    throw new Error('Pedido excede limite máximo de itens.')
-  }
-  payload.totals = payload.totals ?? calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
-  if (!payload.totals || !Number.isFinite(payload.totals.total)) {
-    payload.totals = calcTotals(payload.items, payload.totals?.discount ?? 0, payload.totals?.freight ?? 0)
-  }
+  const seq = await incrementCounter('budget_seq')
+  const budgetNumber = `ORC-${String(seq).padStart(6, '0')}`
 
   const now = Date.now()
-  payload.createdAt = now
-  payload.updatedAt = now
-  // mantém o status como orçamento ao duplicar
-  payload.status = 'orcamento'
 
-  payload.search = buildOrderSearchTokens(payload)
-
-  const cleaned = removeUndefined(payload)
-
-  try {
-    const ref = await addDoc(collection(db, COLLECTION), cleaned)
-    return ref.id
-  } catch (err: any) {
-    console.error('[orders.duplicateOrder] FAILED', {
-      code: err?.code,
-      message: err?.message,
-      name: err?.name,
-    })
-    throw err
+  const payload: any = {
+    ...order,
+    budgetNumber,
+    orderNumber: null,
+    status: 'orcamento',
+    createdAt: now,
+    updatedAt: now,
   }
+
+  delete payload.id
+
+  const ref = await addDoc(collection(db, COLLECTION), payload)
+  return ref.id
+}
+
+/**
+ * CRIAR ORÇAMENTO VIA UI
+ * Regras:
+ * - cliente obrigatório
+ * - pelo menos 1 item
+ * - idempotência (evitar duplicação por clique duplo/retry) via idempotencyKey
+ */
+export async function createOrderFromUiPayload(payload: any) {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  // ✅ Validação dura (não depende da UI)
+  const customerId = String(payload?.customerId ?? '').trim()
+  if (!customerId) {
+    throw new Error('Selecione um cliente antes de salvar o orçamento.')
+  }
+
+  const customer: Customer | null = payload?.customer ?? null
+  if (!customer || !String(customer?.name ?? '').trim()) {
+    throw new Error('Cliente inválido. Selecione novamente e tente salvar.')
+  }
+
+  const items = normalizeItems(payload?.items ?? [])
+  if (!items.length) {
+    throw new Error('Adicione ao menos 1 item antes de salvar o orçamento.')
+  }
+
+  // validação mínima de itens
+  for (const it of items) {
+    if (!it.productId) throw new Error('Existe item sem produto selecionado.')
+    if (!Number.isFinite(it.qty) || it.qty <= 0) throw new Error('Existe item com quantidade inválida.')
+    if (!Number.isFinite(it.unitPrice) || it.unitPrice < 0) throw new Error('Existe item com preço inválido.')
+  }
+
+  const discount = Number(payload?.discount ?? 0) || 0
+  const freight = Number(payload?.freight ?? 0) || 0
+  const notes = String(payload?.notes ?? '').trim()
+
+  const totals = calcTotals(items, discount, freight)
+  if (!Number.isFinite(totals.total) || totals.total <= 0) {
+    throw new Error('O orçamento precisa ter um valor total maior que zero.')
+  }
+
+  // 🔒 Idempotência (anti-duplicação)
+  const now = Date.now()
+  const bucket = Math.floor(now / 15000) // 15s
+  const signature = JSON.stringify({
+    customerId,
+    items: items.map((i) => ({
+      productId: i.productId,
+      qty: i.qty,
+      unitPrice: i.unitPrice,
+    })),
+    discount,
+    freight,
+    notes,
+    bucket,
+  })
+  const idempotencyKey = `o_${fnv1a(signature)}`
+
+  // Se já existe um doc criado nesse bucket com mesmos dados, bloqueia duplicação
+  const q = query(
+    collection(db, COLLECTION),
+    where('idempotencyKey', '==', idempotencyKey),
+    limit(1)
+  )
+  const snap = await getDocs(q)
+  if (!snap.empty) {
+    throw new Error('Esse orçamento já foi criado. Evite duplicação (clique duplo/retry).')
+  }
+
+  // Numeração ORC
+  const seq = await incrementCounter('budget_seq')
+  const budgetNumber = `ORC-${String(seq).padStart(6, '0')}`
+
+  const customerSnapshot = buildCustomerSnapshot(
+    customer,
+    toAddressObject(payload?.deliveryAddress ?? null)
+  )
+
+  const docPayload: any = {
+    customerId,
+    customerSnapshot,
+    items,
+    totals,
+    notes,
+    discount,
+    freight,
+    budgetNumber,
+    orderNumber: null,
+    status: 'orcamento',
+    idempotencyKey,
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  const ref = await addDoc(collection(db, COLLECTION), docPayload)
+  return ref.id
 }

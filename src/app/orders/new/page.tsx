@@ -6,6 +6,7 @@ import { getAllCustomers } from '@/lib/db/customers'
 import { getAllProducts } from '@/lib/db/products'
 import { createOrderFromUiPayload } from '@/lib/db/orders'
 import { formatAddress, toAddressObject } from '@/lib/address'
+import { Toast } from '@/components/Toast'
 
 type OrderItemDraft = OrderFormData['items'][number]
 
@@ -19,6 +20,8 @@ export default function NewOrderPage() {
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [toastMsg, setToastMsg] = useState('')
+  const [toastVisible, setToastVisible] = useState(false)
 
   // UI helpers (Mercos-like): filtros rápidos
   const [customerQuery, setCustomerQuery] = useState('')
@@ -145,17 +148,20 @@ export default function NewOrderPage() {
   const handleSubmit = async () => {
     // Validações de segurança antes de tocar no Firestore
     if (!selectedCustomerId || !selectedCustomer) {
-      alert('Selecione um cliente antes de salvar o orçamento.')
+      setToastMsg('Selecione um cliente antes de salvar o orçamento.')
+      setToastVisible(true)
       return
     }
 
     if (!items || items.length === 0) {
-      alert('Adicione pelo menos um item ao orçamento antes de salvar.')
+      setToastMsg('Adicione pelo menos um item ao orçamento antes de salvar.')
+      setToastVisible(true)
       return
     }
 
     if (!Number.isFinite(totals.total) || totals.total <= 0) {
-      alert('O orçamento precisa ter um valor total maior que zero.')
+      setToastMsg('O orçamento precisa ter um valor total maior que zero.')
+      setToastVisible(true)
       return
     }
 
@@ -182,7 +188,8 @@ export default function NewOrderPage() {
       window.location.href = `/orders/${id}`
     } catch (err: any) {
       console.error('[orders/new.handleSubmit] FAILED', err)
-      alert(err?.message || 'Erro ao salvar orçamento.')
+      setToastMsg(err?.message || 'Erro ao salvar orçamento.')
+      setToastVisible(true)
     } finally {
       setSaving(false)
     }
@@ -438,6 +445,13 @@ export default function NewOrderPage() {
           </div>
         </div>
       </div>
+      <Toast
+        visible={toastVisible}
+        message={toastMsg}
+        variant="error"
+        onClose={() => setToastVisible(false)}
+      />
     </div>
   )
 }
+

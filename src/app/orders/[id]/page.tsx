@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import type { Order } from '@/types'
+import type { Order, OrderStatus } from '@/types'
 import { getOrder, updateOrderStatus, duplicateOrder } from '@/lib/db/orders'
 import { generateOrderPdf } from '@/lib/pdf/generateOrderPdf'
 import { formatAddress } from '@/lib/address'
+import { StatusPill } from '@/components/StatusPill'
+import { Toast } from '@/components/Toast'
 
 const currency = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -42,6 +44,9 @@ export default function OrderDetailsPage() {
   const [order, setOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [statusBusy, setStatusBusy] = useState(false)
+  const [toastMsg, setToastMsg] = useState('')
+  const [toastVisible, setToastVisible] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -105,37 +110,45 @@ export default function OrderDetailsPage() {
   }
 
   const handleStatusChange = async (status: string) => {
-    if (!order) return
-    setBusy(true)
+    if (!order || statusBusy) return
+    setStatusBusy(true)
     try {
       await updateOrderStatus((order as any).id, status)
       await reload()
     } catch (err: any) {
-      alert(err?.message ?? 'Erro ao alterar status.')
+      console.error('[OrderDetailsPage.handleStatusChange] FAILED', err)
+      setToastMsg(err?.message ?? 'Erro ao alterar status.')
+      setToastVisible(true)
     } finally {
-      setBusy(false)
+      setStatusBusy(false)
     }
   }
 
   const handleDuplicate = async () => {
-    if (!order) return
+    if (!order || busy) return
     setBusy(true)
     try {
       const newId = await duplicateOrder(order)
       router.push(`/orders/${newId}`)
+    } catch (err: any) {
+      console.error('[OrderDetailsPage.handleDuplicate] FAILED', err)
+      setToastMsg(err?.message ?? 'Erro ao duplicar pedido.')
+      setToastVisible(true)
     } finally {
       setBusy(false)
     }
   }
 
   const handleGeneratePdf = async () => {
-    if (!order) return
+    if (!order || busy) return
     setBusy(true)
     try {
       const bytes = await generateOrderPdf(order)
       const base64 = uint8ToBase64(bytes as Uint8Array)
       const dataUrl = `data:application/pdf;base64,${base64}`
-      const fileName = `pedido-${String((order as any).orderNumber || (order as any).budgetNumber || order.id || 'sagrado')}.pdf`
+      const fileName = `pedido-${String(
+        (order as any).orderNumber || (order as any).budgetNumber || order.id || 'sagrado',
+      )}.pdf`
 
       const opened = window.open(dataUrl, '_blank', 'noopener,noreferrer')
       if (!opened) {
@@ -147,6 +160,10 @@ export default function OrderDetailsPage() {
         a.click()
         a.remove()
       }
+    } catch (err: any) {
+      console.error('[OrderDetailsPage.handleGeneratePdf] FAILED', err)
+      setToastMsg(err?.message ?? 'Erro ao gerar PDF.')
+      setToastVisible(true)
     } finally {
       setBusy(false)
     }
@@ -162,31 +179,48 @@ export default function OrderDetailsPage() {
         <div>
           <div className="page-subtitle">Pedidos</div>
           <div className="page-title">{meta.number ? meta.number : 'Detalhe do pedido'}</div>
-          <div className="text-sm text-slate-500 mt-1">
-            {meta.createdAt ? `Criado em ${fmtDate(meta.createdAt)}` : ''}
-            {meta.status ? ` • Status: ${meta.status}` : ''}
+          <div className="mt-1 text-sm text-slate-500 space-x-1">
+            {meta.customer.name && <span>{meta.customer.name}</span>}
+            {meta.createdAt ? <span>• {fmtDate(meta.createdAt)}</span> : null}
+            <span>• Total: {currency.format(meta.total)}</span>
+          </div>
+          <div className="mt-1">
+            <StatusPill status={meta.status as OrderStatus} />
           </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <button type="button" className="btn btn-secondary" onClick={() => router.push('/orders')} disabled={busy}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => router.push('/orders')}
+          >
             Voltar
           </button>
 
-          <button type="button" className="btn btn-secondary" onClick={handleGeneratePdf} disabled={busy}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleGeneratePdf}
+            disabled={busy}
+          >
             Gerar PDF
           </button>
 
-          <button type="button" className="btn btn-secondary" onClick={handleDuplicate} disabled={busy}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleDuplicate}
+            disabled={busy}
+          >
             Duplicar
           </button>
 
-          <select className="form-input" value={String((meta.o as any).status || '')} onChange={(e) => handleStatusChange(e.target.value)} disabled={busy}>
-            <option value="orcamento">Orçamento</option>
-            <option value="pedido">Pedido</option>
-            <option value="faturado">Faturado</option>
-            <option value="cancelado">Cancelado</option>
-          </select>
+          <StatusActions
+            status={meta.status as OrderStatus}
+            onChange={handleStatusChange}
+            disabled={statusBusy}
+          />
         </div>
       </div>
 
@@ -324,6 +358,51 @@ export default function OrderDetailsPage() {
           ) : null}
         </div>
       </div>
+      <Toast
+        visible={toastVisible}
+        message={toastMsg}
+        variant="error"
+        onClose={() => setToastVisible(false)}
+      />
     </div>
   )
 }
+
+interface StatusActionsProps {
+  status: OrderStatus
+  disabled?: boolean
+  onChange: (next: OrderStatus) => void
+}
+
+function StatusActions({ status, disabled, onChange }: StatusActionsProps) {
+  const buttons: { label: string; next: OrderStatus; primary?: boolean }[] = []
+
+  if (status === 'orcamento') {
+    buttons.push({ label: 'Confirmar pedido', next: 'pedido', primary: true })
+    buttons.push({ label: 'Cancelar', next: 'cancelado' })
+  } else if (status === 'pedido') {
+    buttons.push({ label: 'Faturar', next: 'faturado', primary: true })
+    buttons.push({ label: 'Cancelar', next: 'cancelado' })
+  }
+
+  if (!buttons.length) {
+    return null
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {buttons.map((btn) => (
+        <button
+          key={btn.next}
+          type="button"
+          className={btn.primary ? 'btn btn-primary' : 'btn btn-secondary'}
+          onClick={() => onChange(btn.next)}
+          disabled={disabled}
+        >
+          {btn.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
