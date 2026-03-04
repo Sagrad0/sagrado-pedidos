@@ -2,10 +2,13 @@
 
 import { useState, useEffect } from 'react'
 import { Product, ProductFormData } from '@/types'
-import { getAllProducts, searchProducts, createProduct, updateProduct, toggleProductActive } from '@/lib/db/products'
+import { getAllProducts, createProduct, updateProduct, toggleProductActive } from '@/lib/db/products'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
+import { Toast } from '@/components/Toast'
+import { Skeleton } from '@/components/Skeleton'
+import { EmptyState } from '@/components/EmptyState'
 
 const productSchema = z.object({
   sku: z.string().min(1, 'SKU é obrigatório'),
@@ -25,18 +28,33 @@ export default function ProductsPage() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [toastMsg, setToastMsg] = useState('')
+  const [toastVisible, setToastVisible] = useState(false)
 
-  const { register, handleSubmit, reset, setValue, formState: { errors } } = useForm<ProductFormValues>({
+  const {
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    formState: { errors },
+  } = useForm<ProductFormValues>({
     resolver: zodResolver(productSchema),
   })
 
   useEffect(() => {
     async function fetchData() {
       setLoading(true)
-      const data = await getAllProducts()
-      setProducts(data)
-      setFilteredProducts(data)
-      setLoading(false)
+      try {
+        const data = await getAllProducts()
+        setProducts(data)
+        setFilteredProducts(data)
+      } catch (err: any) {
+        console.error('[ProductsPage.fetchData] FAILED', err)
+        setToastMsg(err?.message || 'Erro ao carregar produtos.')
+        setToastVisible(true)
+      } finally {
+        setLoading(false)
+      }
     }
     fetchData()
   }, [])
@@ -50,8 +68,8 @@ export default function ProductsPage() {
         products.filter(
           (p) =>
             p.name.toLowerCase().includes(t) ||
-            p.sku.toLowerCase().includes(t)
-        )
+            p.sku.toLowerCase().includes(t),
+        ),
       )
     }
   }, [searchTerm, products])
@@ -83,165 +101,275 @@ export default function ProductsPage() {
       price: Number(values.price),
       active: Boolean(values.active),
     }
-    if (selectedProduct) {
-      await updateProduct(selectedProduct.id, payload)
-    } else {
-      await createProduct(payload)
+
+    try {
+      if (selectedProduct) {
+        await updateProduct(selectedProduct.id, payload)
+      } else {
+        await createProduct(payload)
+      }
+      const data = await getAllProducts()
+      setProducts(data)
+      setFilteredProducts(data)
+      setIsModalOpen(false)
+      setToastMsg('Produto salvo com sucesso.')
+      setToastVisible(true)
+    } catch (err: any) {
+      console.error('[ProductsPage.onSubmit] FAILED', err)
+      setToastMsg(err?.message || 'Erro ao salvar produto.')
+      setToastVisible(true)
     }
-    const data = await getAllProducts()
-    setProducts(data)
-    setFilteredProducts(data)
-    setIsModalOpen(false)
   }
 
   const handleEdit = (product: Product) => openModal(product)
 
   const handleToggleActive = async (product: Product) => {
-    await toggleProductActive(product.id, !product.active)
-    const data = await getAllProducts()
-    setProducts(data)
-    setFilteredProducts(data)
-  }
-
-  if (loading) {
-    return <div className="text-center py-8">Carregando...</div>
+    try {
+      await toggleProductActive(product.id, !product.active)
+      const data = await getAllProducts()
+      setProducts(data)
+      setFilteredProducts(data)
+      setToastMsg('Produto atualizado.')
+      setToastVisible(true)
+    } catch (err: any) {
+      console.error('[ProductsPage.handleToggleActive] FAILED', err)
+      setToastMsg(err?.message || 'Erro ao atualizar produto.')
+      setToastVisible(true)
+    }
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-900">Produtos</h1>
-        <button onClick={() => openModal()} className="btn btn-primary">Novo Produto</button>
-      </div>
-
-      <div className="card p-4">
-        <label className="form-label">Buscar</label>
-        <input
-          type="text"
-          placeholder="Buscar por nome ou SKU..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="form-input"
-        />
-      </div>
-
-      {/* Mobile list (cards) */}
-      <div className="md:hidden space-y-3">
-        {filteredProducts.map((product) => (
-          <div key={product.id} className="bg-white border rounded-xl p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-base font-semibold text-gray-900 truncate">{product.sku} — {product.name}</p>
-                <p className="text-sm text-gray-600">R$ {product.price.toFixed(2)} • {product.unit}{product.weight ? ` • ${product.weight}g` : ''}</p>
-                <span className={"inline-flex mt-1 px-2 py-0.5 text-xs font-medium rounded-full " + (product.active ? "bg-green-100 text-green-800" : "bg-gray-200 text-gray-700")}>
-                  {product.active ? "Ativo" : "Inativo"}
-                </span>
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button onClick={() => handleEdit(product)} className="btn btn-secondary flex-1 min-w-[120px]">Editar</button>
-              <button onClick={() => handleToggleActive(product)} className="btn btn-primary flex-1 min-w-[120px]">
-                {product.active ? "Desativar" : "Ativar"}
-              </button>
-            </div>
+    <div className="page">
+      <div className="page-header">
+        <div>
+          <div className="page-subtitle">Cadastros</div>
+          <h1 className="page-title">Produtos</h1>
+          <div className="text-sm text-slate-500 mt-1">
+            Gerencie catálogo e disponibilidade.
           </div>
-        ))}
+        </div>
+        <button onClick={() => openModal()} className="btn btn-primary">
+          Novo produto
+        </button>
       </div>
 
-      {/* Desktop table */}
-      <div className="hidden md:block">
-        <div className="card overflow-x-auto">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>SKU</th>
-                <th>Nome</th>
-                <th>Unidade</th>
-                <th>Peso (g)</th>
-                <th>Preço</th>
-                <th>Status</th>
-                <th>Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredProducts.map((product) => (
-                <tr key={product.id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {product.sku}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {product.name}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {product.unit}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {product.weight || '-'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    R$ {product.price.toFixed(2)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">
-                    <span className={product.active ? 'text-green-700' : 'text-gray-500'}>
-                      {product.active ? 'Ativo' : 'Inativo'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-3">
+      <div className="card mb-4">
+        <div className="card-body">
+          <label className="form-label">Buscar</label>
+          <input
+            type="text"
+            placeholder="Buscar por nome ou SKU..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="form-input"
+          />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="card">
+          <div className="card-body">
+            <Skeleton lines={6} />
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Mobile list (cards) */}
+          <div className="md:hidden space-y-3">
+            {filteredProducts.length === 0 ? (
+              <EmptyState
+                title="Nenhum produto encontrado"
+                description={
+                  searchTerm
+                    ? 'Ajuste o termo de busca.'
+                    : 'Cadastre seu primeiro produto.'
+                }
+                actionLabel={searchTerm ? undefined : 'Novo produto'}
+                onActionClick={searchTerm ? undefined : () => openModal()}
+              />
+            ) : (
+              filteredProducts.map((product) => (
+                <div key={product.id} className="card">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-base font-semibold text-slate-900 truncate">
+                        {product.sku} — {product.name}
+                      </p>
+                      <p className="text-sm text-slate-600">
+                        R$ {product.price.toFixed(2)} • {product.unit}
+                        {product.weight ? ` • ${product.weight}g` : ''}
+                      </p>
+                      <span
+                        className={
+                          'inline-flex mt-1 px-2 py-0.5 text-xs font-medium rounded-full ' +
+                          (product.active
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-gray-200 text-gray-700')
+                        }
+                      >
+                        {product.active ? 'Ativo' : 'Inativo'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
                     <button
                       onClick={() => handleEdit(product)}
-                      className="text-blue-600 hover:text-blue-900"
+                      className="btn btn-secondary flex-1 min-w-[120px]"
                     >
                       Editar
                     </button>
                     <button
                       onClick={() => handleToggleActive(product)}
-                      className="text-gray-700 hover:text-gray-900"
+                      className="btn btn-primary flex-1 min-w-[120px]"
                     >
                       {product.active ? 'Desativar' : 'Ativar'}
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden md:block">
+            <div className="card overflow-x-auto">
+              {filteredProducts.length === 0 ? (
+                <div className="card-body">
+                  <EmptyState
+                    title="Nenhum produto encontrado"
+                    description={
+                      searchTerm
+                        ? 'Ajuste a busca ou limpe o filtro.'
+                        : 'Cadastre seu primeiro produto.'
+                    }
+                    actionLabel={searchTerm ? undefined : 'Novo produto'}
+                    onActionClick={searchTerm ? undefined : () => openModal()}
+                  />
+                </div>
+              ) : (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Nome</th>
+                      <th>Unidade</th>
+                      <th>Peso (g)</th>
+                      <th>Preço</th>
+                      <th>Status</th>
+                      <th>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredProducts.map((product) => (
+                      <tr key={product.id}>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                          {product.sku}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {product.name}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {product.unit}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          {product.weight || '-'}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          R$ {product.price.toFixed(2)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <span
+                            className={
+                              product.active ? 'text-green-700' : 'text-gray-500'
+                            }
+                          >
+                            {product.active ? 'Ativo' : 'Inativo'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-3">
+                          <button
+                            onClick={() => handleEdit(product)}
+                            className="text-blue-600 hover:text-blue-900"
+                          >
+                            Editar
+                          </button>
+                          <button
+                            onClick={() => handleToggleActive(product)}
+                            className="text-gray-700 hover:text-gray-900"
+                          >
+                            {product.active ? 'Desativar' : 'Ativar'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-lg">
             <div className="px-6 py-4 border-b flex items-center justify-between">
-              <h2 className="text-lg font-semibold">{selectedProduct ? 'Editar Produto' : 'Novo Produto'}</h2>
-              <button onClick={closeModal} className="text-gray-500 hover:text-gray-700">✕</button>
+              <h2 className="text-lg font-semibold">
+                {selectedProduct ? 'Editar Produto' : 'Novo Produto'}
+              </h2>
+              <button
+                onClick={closeModal}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
             </div>
             <form className="p-6 space-y-4" onSubmit={handleSubmit(onSubmit)}>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="form-label">SKU</label>
                   <input {...register('sku')} className="form-input" />
-                  {errors.sku && <p className="text-red-500 text-sm">{errors.sku.message}</p>}
+                  {errors.sku && (
+                    <p className="text-red-500 text-sm">{errors.sku.message}</p>
+                  )}
                 </div>
                 <div>
                   <label className="form-label">Nome</label>
                   <input {...register('name')} className="form-input" />
-                  {errors.name && <p className="text-red-500 text-sm">{errors.name.message}</p>}
+                  {errors.name && (
+                    <p className="text-red-500 text-sm">{errors.name.message}</p>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="form-label">Unidade</label>
                   <input {...register('unit')} className="form-input" />
-                  {errors.unit && <p className="text-red-500 text-sm">{errors.unit.message}</p>}
+                  {errors.unit && (
+                    <p className="text-red-500 text-sm">{errors.unit.message}</p>
+                  )}
                 </div>
                 <div>
                   <label className="form-label">Peso (g)</label>
-                  <input type="number" step="1" {...register('weight', { valueAsNumber: true })} className="form-input" />
+                  <input
+                    type="number"
+                    step="1"
+                    {...register('weight', { valueAsNumber: true })}
+                    className="form-input"
+                  />
                 </div>
                 <div>
                   <label className="form-label">Preço</label>
-                  <input type="number" step="0.01" {...register('price', { valueAsNumber: true })} className="form-input" />
-                  {errors.price && <p className="text-red-500 text-sm">{errors.price.message}</p>}
+                  <input
+                    type="number"
+                    step="0.01"
+                    {...register('price', { valueAsNumber: true })}
+                    className="form-input"
+                  />
+                  {errors.price && (
+                    <p className="text-red-500 text-sm">{errors.price.message}</p>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -264,6 +392,17 @@ export default function ProductsPage() {
           </div>
         </div>
       )}
+
+      <Toast
+        visible={toastVisible}
+        message={toastMsg}
+        variant={
+          toastMsg.includes('sucesso') || toastMsg.includes('atualizado')
+            ? 'success'
+            : 'error'
+        }
+        onClose={() => setToastVisible(false)}
+      />
     </div>
   )
 }

@@ -8,6 +8,8 @@ import { getAllCustomers, createCustomer, updateCustomer, deleteCustomer } from 
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
+import { fetchViaCep, fetchCnpj } from '@/lib/brLookups'
+import { Toast } from '@/components/Toast'
 
 const addressSchema = z.object({
   raw: z.string().optional(),
@@ -36,10 +38,12 @@ type CustomerFormValues = z.infer<typeof customerSchema>
 function normalizeAddress(a: any): Address | undefined {
   if (!a) return undefined
   const out: any = {}
-  ;['raw', 'cep', 'street', 'number', 'complement', 'neighborhood', 'city', 'state'].forEach((k) => {
-    const v = typeof a?.[k] === 'string' ? a[k].trim() : a?.[k]
-    if (v) out[k] = v
-  })
+    ;['raw', 'cep', 'street', 'number', 'complement', 'neighborhood', 'city', 'state'].forEach(
+      (k) => {
+        const v = typeof a?.[k] === 'string' ? a[k].trim() : a?.[k]
+        if (v) out[k] = v
+      },
+    )
   return Object.keys(out).length ? (out as Address) : undefined
 }
 
@@ -54,6 +58,9 @@ const normalizeText = (v?: string) =>
 
 const onlyDigits = (v?: string) => (v || '').replace(/\D/g, '')
 
+const isEmpty = (v: unknown) =>
+  v === undefined || v === null || (typeof v === 'string' && v.trim() === '')
+
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [filtered, setFiltered] = useState<Customer[]>([])
@@ -64,6 +71,13 @@ export default function CustomersPage() {
   const [open, setOpen] = useState(false)
 
   const [submitError, setSubmitError] = useState<string | null>(null)
+
+  const [loadingCnpj, setLoadingCnpj] = useState(false)
+  const [loadingCepMain, setLoadingCepMain] = useState(false)
+  const [loadingCepDelivery, setLoadingCepDelivery] = useState(false)
+
+  const [toastMsg, setToastMsg] = useState('')
+  const [toastVisible, setToastVisible] = useState(false)
 
   const {
     register,
@@ -78,23 +92,22 @@ export default function CustomersPage() {
 
   useEffect(() => {
     let alive = true
-    ;(async () => {
-      setLoading(true)
-      try {
-        const data = await getAllCustomers()
-        if (!alive) return
-        setCustomers(data)
-        setFiltered(data)
-      } finally {
-        if (alive) setLoading(false)
-      }
-    })()
+      ; (async () => {
+        setLoading(true)
+        try {
+          const data = await getAllCustomers()
+          if (!alive) return
+          setCustomers(data)
+          setFiltered(data)
+        } finally {
+          if (alive) setLoading(false)
+        }
+      })()
     return () => {
       alive = false
     }
   }, [])
 
-  // ✅ BUSCA LOCAL (sem Firestore) — funciona com clientes legados
   const handleSearch = (term: string) => {
     setQ(term)
 
@@ -114,15 +127,15 @@ export default function CustomersPage() {
       const phone = c.phone || ''
       const email = c.email || ''
       const legacyAddress = (c as any).address || ''
-      const mainAddrText = formatAddress((c as any).addressMain || c.address || null) || ''
+      const mainAddrText =
+        formatAddress((c as any).addressMain || c.address || null) || ''
 
       const haystack = normalizeText(
         [fantasyOrName, legalName, doc, phone, email, legacyAddress, mainAddrText]
           .filter(Boolean)
-          .join(' ')
+          .join(' '),
       )
 
-      // Se o termo tiver números, tenta bater por dígitos (telefone/doc) também
       if (tDigits.length >= 3) {
         const docDigits = onlyDigits(doc)
         const phoneDigits = onlyDigits(phone)
@@ -195,47 +208,23 @@ export default function CustomersPage() {
 
       const data = await getAllCustomers()
       setCustomers(data)
-      // mantém a UX: após salvar, aplica filtro atual (se tiver)
+      // reaplicar filtro se houver q
       if (q.trim()) {
-        // reaplica filtro local
-        const term = q
-        const t = term.trim()
-        const tNorm = normalizeText(t)
-        const tDigits = onlyDigits(t)
-
-        const results = data.filter((c) => {
-          const legalName = (c as any).legalName || ''
-          const fantasyOrName = c.name || ''
-          const doc = c.doc || ''
-          const phone = c.phone || ''
-          const email = c.email || ''
-          const legacyAddress = (c as any).address || ''
-          const mainAddrText = formatAddress((c as any).addressMain || c.address || null) || ''
-
-          const haystack = normalizeText(
-            [fantasyOrName, legalName, doc, phone, email, legacyAddress, mainAddrText]
-              .filter(Boolean)
-              .join(' ')
-          )
-
-          if (tDigits.length >= 3) {
-            const docDigits = onlyDigits(doc)
-            const phoneDigits = onlyDigits(phone)
-            if (docDigits.includes(tDigits) || phoneDigits.includes(tDigits)) return true
-          }
-
-          return haystack.includes(tNorm)
-        })
-
-        setFiltered(results)
+        handleSearch(q)
       } else {
         setFiltered(data)
       }
 
       closeModal()
+      setToastMsg('Cliente salvo com sucesso.')
+      setToastVisible(true)
     } catch (err: any) {
       console.error('[CustomersPage.onSubmit] FAILED', err)
-      setSubmitError(err?.message || 'Erro ao salvar. Verifique permissões do Firestore.')
+      setSubmitError(
+        err?.message || 'Erro ao salvar. Verifique permissões do Firestore.',
+      )
+      setToastMsg('Erro ao salvar cliente.')
+      setToastVisible(true)
     }
   }
 
@@ -246,46 +235,168 @@ export default function CustomersPage() {
     const data = await getAllCustomers()
     setCustomers(data)
 
-    // reaplica filtro local após excluir
     if (q.trim()) {
-      const term = q
-      const t = term.trim()
-      const tNorm = normalizeText(t)
-      const tDigits = onlyDigits(t)
-
-      const results = data.filter((c) => {
-        const legalName = (c as any).legalName || ''
-        const fantasyOrName = c.name || ''
-        const doc = c.doc || ''
-        const phone = c.phone || ''
-        const email = c.email || ''
-        const legacyAddress = (c as any).address || ''
-        const mainAddrText = formatAddress((c as any).addressMain || c.address || null) || ''
-
-        const haystack = normalizeText(
-          [fantasyOrName, legalName, doc, phone, email, legacyAddress, mainAddrText]
-            .filter(Boolean)
-            .join(' ')
-        )
-
-        if (tDigits.length >= 3) {
-          const docDigits = onlyDigits(doc)
-          const phoneDigits = onlyDigits(phone)
-          if (docDigits.includes(tDigits) || phoneDigits.includes(tDigits)) return true
-        }
-
-        return haystack.includes(tNorm)
-      })
-
-      setFiltered(results)
+      handleSearch(q)
     } else {
       setFiltered(data)
     }
+
+    setToastMsg('Cliente excluído.')
+    setToastVisible(true)
   }
 
-  // Preview de endereço no modal (ajuda UX de campo)
-  const previewMain = useMemo(() => formatAddress(watch('addressMain') as any), [watch])
-  const previewDelivery = useMemo(() => formatAddress(watch('addressDelivery') as any), [watch])
+  const handleFetchCnpj = async () => {
+    const currentDoc = watch('doc') as string | undefined
+    const digits = onlyDigits(currentDoc)
+    if (digits.length !== 14) {
+      setToastMsg('Informe um CNPJ válido (14 dígitos)')
+      setToastVisible(true)
+      return
+    }
+
+    setLoadingCnpj(true)
+    try {
+      const data = await fetchCnpj(digits)
+
+      const currentName = watch('name')
+      const currentLegal = watch('legalName')
+
+      if (isEmpty(currentName) && data.nome_fantasia) {
+        setValue('name', data.nome_fantasia)
+      }
+
+      if (isEmpty(currentLegal) && data.razao_social) {
+        setValue('legalName', data.razao_social)
+      }
+
+      const addrMain = (watch('addressMain') as any) || {}
+      const next: any = { ...addrMain }
+
+      if (isEmpty(next.cep) && data.cep)
+        next.cep = data.cep.replace(/\D+/g, '')
+
+      if (isEmpty(next.street) && data.logradouro)
+        next.street = data.logradouro
+
+      if (isEmpty(next.number) && data.numero)
+        next.number = String(data.numero)
+
+      if (isEmpty(next.complement) && data.complemento)
+        next.complement = data.complemento
+
+      if (isEmpty(next.neighborhood) && data.bairro)
+        next.neighborhood = data.bairro
+
+      if (isEmpty(next.city) && data.municipio)
+        next.city = data.municipio
+
+      if (isEmpty(next.state) && data.uf)
+        next.state = data.uf.toUpperCase()
+
+      setValue('addressMain', next)
+
+      setToastMsg('Dados do CNPJ importados (sem alterar telefone/e-mail).')
+      setToastVisible(true)
+    } catch (err: any) {
+      console.error('[CustomersPage.handleFetchCnpj] FAILED', err)
+      setToastMsg(err?.message || 'Erro ao buscar CNPJ')
+      setToastVisible(true)
+    } finally {
+      setLoadingCnpj(false)
+    }
+  }
+
+  const handleFetchCepMain = async () => {
+    const addrMain = (watch('addressMain') as any) || {}
+    const cepDigits = onlyDigits(addrMain.cep)
+
+    if (cepDigits.length !== 8) {
+      setToastMsg('CEP inválido')
+      setToastVisible(true)
+      return
+    }
+
+    setLoadingCepMain(true)
+    try {
+      const data = await fetchViaCep(cepDigits)
+
+      const next: any = { ...addrMain }
+
+      if (isEmpty(next.street) && data.logradouro)
+        next.street = data.logradouro
+
+      if (isEmpty(next.neighborhood) && data.bairro)
+        next.neighborhood = data.bairro
+
+      if (isEmpty(next.city) && data.localidade)
+        next.city = data.localidade
+
+      if (isEmpty(next.state) && data.uf)
+        next.state = data.uf.toUpperCase()
+
+      setValue('addressMain', next)
+
+      setToastMsg('CEP preenchido')
+      setToastVisible(true)
+    } catch (err) {
+      console.error('[CustomersPage.handleFetchCepMain] FAILED', err)
+      setToastMsg('Erro ao buscar CEP')
+      setToastVisible(true)
+    } finally {
+      setLoadingCepMain(false)
+    }
+  }
+
+  const handleFetchCepDelivery = async () => {
+    const addr = (watch('addressDelivery') as any) || {}
+    const cepDigits = onlyDigits(addr.cep)
+
+    if (cepDigits.length !== 8) {
+      setToastMsg('CEP inválido')
+      setToastVisible(true)
+      return
+    }
+
+    setLoadingCepDelivery(true)
+    try {
+      const data = await fetchViaCep(cepDigits)
+
+      const next: any = { ...addr }
+
+      if (isEmpty(next.street) && data.logradouro)
+        next.street = data.logradouro
+
+      if (isEmpty(next.neighborhood) && data.bairro)
+        next.neighborhood = data.bairro
+
+      if (isEmpty(next.city) && data.localidade)
+        next.city = data.localidade
+
+      if (isEmpty(next.state) && data.uf)
+        next.state = data.uf.toUpperCase()
+
+      setValue('addressDelivery', next)
+
+      setToastMsg('CEP entrega preenchido')
+      setToastVisible(true)
+    } catch (err) {
+      console.error('[CustomersPage.handleFetchCepDelivery] FAILED', err)
+      setToastMsg('Erro ao buscar CEP entrega')
+      setToastVisible(true)
+    } finally {
+      setLoadingCepDelivery(false)
+    }
+  }
+
+  const previewMain = useMemo(
+    () => formatAddress(watch('addressMain') as any),
+    [watch],
+  )
+
+  const previewDelivery = useMemo(
+    () => formatAddress(watch('addressDelivery') as any),
+    [watch],
+  )
 
   return (
     <div className="page">
@@ -294,7 +405,9 @@ export default function CustomersPage() {
         <div>
           <div className="page-subtitle">Cadastros</div>
           <h1 className="page-title">Clientes</h1>
-          <div className="text-sm text-slate-500 mt-1">Busca rápida + clique na linha pra editar.</div>
+          <div className="text-sm text-slate-500 mt-1">
+            Busca rápida + clique na linha pra editar.
+          </div>
         </div>
 
         <button onClick={() => openModal()} className="btn btn-primary">
@@ -312,7 +425,9 @@ export default function CustomersPage() {
             placeholder="Nome, telefone, doc, razão social…"
             className="form-input"
           />
-          <div className="form-hint mt-1">Dica: buscar por telefone costuma ser o mais rápido.</div>
+          <div className="form-hint mt-1">
+            Dica: buscar por telefone costuma ser o mais rápido.
+          </div>
         </div>
       </div>
 
@@ -341,30 +456,48 @@ export default function CustomersPage() {
               </thead>
               <tbody>
                 {filtered.map((c) => {
-                  const legalName = (c as any).legalName
+                  const legalName = (c as any).legalName || ''
                   const addrMain = (c as any).addressMain || c.address
                   const addrText = addrMain ? formatAddress(addrMain) : '-'
 
                   return (
-                    <tr key={c.id} className="cursor-pointer" onClick={() => openModal(c)} title="Clique para editar">
+                    <tr
+                      key={c.id}
+                      className="cursor-pointer"
+                      onClick={() => openModal(c)}
+                      title="Clique para editar"
+                    >
                       <td>
                         <div className="font-semibold">{c.name}</div>
-                        {legalName ? <div className="text-xs text-slate-500">{legalName}</div> : null}
+                        {legalName ? (
+                          <div className="text-xs text-slate-500">{legalName}</div>
+                        ) : null}
                       </td>
 
                       <td className="mono">{c.phone}</td>
                       <td className="mono">{c.doc || '-'}</td>
 
                       <td>
-                        <div className="text-sm text-slate-900 line-clamp-2">{addrText || '-'}</div>
+                        <div className="text-sm text-slate-900 line-clamp-2">
+                          {addrText || '-'}
+                        </div>
                       </td>
 
-                      <td className="table-right" onClick={(e) => e.stopPropagation()}>
+                      <td
+                        className="table-right"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <div className="flex justify-end gap-2">
-                          <button className="btn btn-secondary btn-sm" onClick={() => openModal(c)}>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => openModal(c)}
+                          >
                             Editar
                           </button>
-                          <button className="btn btn-danger btn-sm" onClick={() => handleDelete(c.id)}>
+                          <button
+                            className="btn btn-danger btn-sm"
+                            onClick={() => handleDelete(c.id)}
+                          >
                             Excluir
                           </button>
                         </div>
@@ -375,7 +508,10 @@ export default function CustomersPage() {
 
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="text-center text-slate-500 py-8">
+                    <td
+                      colSpan={5}
+                      className="text-center text-slate-500 py-8"
+                    >
                       Nenhum cliente encontrado.
                     </td>
                   </tr>
@@ -388,24 +524,36 @@ export default function CustomersPage() {
 
       {/* Modal */}
       {open && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 overflow-y-auto" onClick={closeModal}>
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 overflow-y-auto"
+          onClick={closeModal}
+        >
           <div
             className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-xl max-h-[calc(100vh-2rem)] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
-                <div className="text-xs text-slate-500">{selected ? 'Editar' : 'Novo'}</div>
-                <div className="text-lg font-semibold text-slate-900">Cliente</div>
+                <div className="text-xs text-slate-500">
+                  {selected ? 'Editar' : 'Novo'}
+                </div>
+                <div className="text-lg font-semibold text-slate-900">
+                  Cliente
+                </div>
               </div>
               <button onClick={closeModal} className="btn btn-ghost btn-sm">
                 Fechar
               </button>
             </div>
 
-            <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-5 flex-1 overflow-y-auto min-h-0">
+            <form
+              onSubmit={handleSubmit(onSubmit)}
+              className="p-5 space-y-5 flex-1 overflow-y-auto min-h-0"
+            >
               {submitError && (
-                <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700 border border-red-100">{submitError}</div>
+                <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700 border border-red-100">
+                  {submitError}
+                </div>
               )}
 
               {/* Dados */}
@@ -414,10 +562,39 @@ export default function CustomersPage() {
                   <div className="card-title">Dados</div>
                 </div>
                 <div className="card-body grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="md:col-span-2">
+                    <label className="form-label font-semibold">
+                      Documento (CNPJ/CPF)
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        {...register('doc')}
+                        className="form-input flex-1"
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={handleFetchCnpj}
+                        disabled={loadingCnpj}
+                      >
+                        {loadingCnpj ? 'Buscando…' : 'Buscar CNPJ'}
+                      </button>
+                    </div>
+                    <div className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                      Preencha o CNPJ para autopreencher o cadastro (nome e
+                      endereço). Telefone e e-mail continuam manuais e
+                      obrigatórios.
+                    </div>
+                  </div>
+
                   <div>
                     <label className="form-label">Nome fantasia*</label>
                     <input {...register('name')} className="form-input" />
-                    {errors.name && <p className="text-red-600 text-sm mt-1">{errors.name.message}</p>}
+                    {errors.name && (
+                      <p className="text-red-600 text-sm mt-1">
+                        {errors.name.message}
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -426,20 +603,27 @@ export default function CustomersPage() {
                   </div>
 
                   <div>
-                    <label className="form-label">Documento (CNPJ/CPF)</label>
-                    <input {...register('doc')} className="form-input" />
-                  </div>
-
-                  <div>
                     <label className="form-label">Telefone*</label>
                     <input {...register('phone')} className="form-input" />
-                    {errors.phone && <p className="text-red-600 text-sm mt-1">{errors.phone.message}</p>}
+                    {errors.phone && (
+                      <p className="text-red-600 text-sm mt-1">
+                        {errors.phone.message}
+                      </p>
+                    )}
                   </div>
 
                   <div className="md:col-span-2">
                     <label className="form-label">E-mail</label>
-                    <input {...register('email')} type="email" className="form-input" />
-                    {errors.email && <p className="text-red-600 text-sm mt-1">{errors.email.message}</p>}
+                    <input
+                      {...register('email')}
+                      type="email"
+                      className="form-input"
+                    />
+                    {errors.email && (
+                      <p className="text-red-600 text-sm mt-1">
+                        {errors.email.message}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -453,7 +637,9 @@ export default function CustomersPage() {
                 <div className="card-body space-y-3">
                   {previewMain ? (
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
-                      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Prévia</div>
+                      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">
+                        Prévia
+                      </div>
                       <div className="mt-1">{previewMain}</div>
                     </div>
                   ) : null}
@@ -461,38 +647,72 @@ export default function CustomersPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                     <div className="sm:col-span-3">
                       <label className="form-label">CEP</label>
-                      <input {...register('addressMain.cep')} className="form-input" />
+                      <div className="flex gap-2">
+                        <input
+                          {...register('addressMain.cep')}
+                          className="form-input flex-1"
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleFetchCepMain}
+                          disabled={loadingCepMain}
+                        >
+                          {loadingCepMain ? 'Buscando…' : 'Buscar CEP'}
+                        </button>
+                      </div>
                     </div>
                     <div className="sm:col-span-7">
                       <label className="form-label">Rua / Av.</label>
-                      <input {...register('addressMain.street')} className="form-input" />
+                      <input
+                        {...register('addressMain.street')}
+                        className="form-input"
+                      />
                     </div>
                     <div className="sm:col-span-2">
                       <label className="form-label">Nº</label>
-                      <input {...register('addressMain.number')} className="form-input" />
+                      <input
+                        {...register('addressMain.number')}
+                        className="form-input"
+                      />
                     </div>
 
                     <div className="sm:col-span-5">
                       <label className="form-label">Bairro</label>
-                      <input {...register('addressMain.neighborhood')} className="form-input" />
+                      <input
+                        {...register('addressMain.neighborhood')}
+                        className="form-input"
+                      />
                     </div>
                     <div className="sm:col-span-5">
                       <label className="form-label">Cidade</label>
-                      <input {...register('addressMain.city')} className="form-input" />
+                      <input
+                        {...register('addressMain.city')}
+                        className="form-input"
+                      />
                     </div>
                     <div className="sm:col-span-2">
                       <label className="form-label">UF</label>
-                      <input {...register('addressMain.state')} className="form-input" />
+                      <input
+                        {...register('addressMain.state')}
+                        className="form-input"
+                      />
                     </div>
 
                     <div className="sm:col-span-12">
                       <label className="form-label">Complemento</label>
-                      <input {...register('addressMain.complement')} className="form-input" />
+                      <input
+                        {...register('addressMain.complement')}
+                        className="form-input"
+                      />
                     </div>
 
                     <div className="sm:col-span-12">
                       <label className="form-label">Texto livre (opcional)</label>
-                      <input {...register('addressMain.raw')} className="form-input" />
+                      <input
+                        {...register('addressMain.raw')}
+                        className="form-input"
+                      />
                     </div>
                   </div>
                 </div>
@@ -507,7 +727,9 @@ export default function CustomersPage() {
                 <div className="card-body space-y-3">
                   {previewDelivery ? (
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
-                      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Prévia</div>
+                      <div className="text-xs font-bold uppercase tracking-wide text-slate-500">
+                        Prévia
+                      </div>
                       <div className="mt-1">{previewDelivery}</div>
                     </div>
                   ) : null}
@@ -515,38 +737,72 @@ export default function CustomersPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                     <div className="sm:col-span-3">
                       <label className="form-label">CEP</label>
-                      <input {...register('addressDelivery.cep')} className="form-input" />
+                      <div className="flex gap-2">
+                        <input
+                          {...register('addressDelivery.cep')}
+                          className="form-input flex-1"
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleFetchCepDelivery}
+                          disabled={loadingCepDelivery}
+                        >
+                          {loadingCepDelivery ? 'Buscando…' : 'Buscar CEP'}
+                        </button>
+                      </div>
                     </div>
                     <div className="sm:col-span-7">
                       <label className="form-label">Rua / Av.</label>
-                      <input {...register('addressDelivery.street')} className="form-input" />
+                      <input
+                        {...register('addressDelivery.street')}
+                        className="form-input"
+                      />
                     </div>
                     <div className="sm:col-span-2">
                       <label className="form-label">Nº</label>
-                      <input {...register('addressDelivery.number')} className="form-input" />
+                      <input
+                        {...register('addressDelivery.number')}
+                        className="form-input"
+                      />
                     </div>
 
                     <div className="sm:col-span-5">
                       <label className="form-label">Bairro</label>
-                      <input {...register('addressDelivery.neighborhood')} className="form-input" />
+                      <input
+                        {...register('addressDelivery.neighborhood')}
+                        className="form-input"
+                      />
                     </div>
                     <div className="sm:col-span-5">
                       <label className="form-label">Cidade</label>
-                      <input {...register('addressDelivery.city')} className="form-input" />
+                      <input
+                        {...register('addressDelivery.city')}
+                        className="form-input"
+                      />
                     </div>
                     <div className="sm:col-span-2">
                       <label className="form-label">UF</label>
-                      <input {...register('addressDelivery.state')} className="form-input" />
+                      <input
+                        {...register('addressDelivery.state')}
+                        className="form-input"
+                      />
                     </div>
 
                     <div className="sm:col-span-12">
                       <label className="form-label">Complemento</label>
-                      <input {...register('addressDelivery.complement')} className="form-input" />
+                      <input
+                        {...register('addressDelivery.complement')}
+                        className="form-input"
+                      />
                     </div>
 
                     <div className="sm:col-span-12">
                       <label className="form-label">Texto livre (opcional)</label>
-                      <input {...register('addressDelivery.raw')} className="form-input" />
+                      <input
+                        {...register('addressDelivery.raw')}
+                        className="form-input"
+                      />
                     </div>
                   </div>
                 </div>
@@ -557,7 +813,11 @@ export default function CustomersPage() {
 
               {/* Footer */}
               <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-                <button type="button" onClick={closeModal} className="btn btn-secondary">
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  className="btn btn-secondary"
+                >
                   Cancelar
                 </button>
                 <button type="submit" className="btn btn-primary">
@@ -568,6 +828,13 @@ export default function CustomersPage() {
           </div>
         </div>
       )}
+
+      <Toast
+        visible={toastVisible}
+        message={toastMsg}
+        variant={toastMsg.toLowerCase().includes('erro') ? 'error' : 'success'}
+        onClose={() => setToastVisible(false)}
+      />
     </div>
   )
 }
