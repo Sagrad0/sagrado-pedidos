@@ -3,12 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 
-import {
-  getAllOrders,
-  getOrdersByStatus,
-  searchOrders,
-  getOrdersCount,
-} from '@/lib/db/orders'
+import { getAllOrders } from '@/lib/db/orders'
 
 import { getCustomersCount } from '@/lib/db/customers'
 import { getProductsCount } from '@/lib/db/products'
@@ -74,16 +69,27 @@ export default function OrdersPage() {
         setLoading(true)
 
         try {
-          let data: Order[] = []
+          const allOrders = await getAllOrders()
 
-          if (tab === 'todos') data = await getAllOrders()
-          else data = await getOrdersByStatus(tab)
+          let data = allOrders
 
-          if (q.trim()) {
-            const searched = await searchOrders(q)
-            data = tab === 'todos'
-              ? searched
-              : searched.filter((o) => o.status === tab)
+          if (tab !== 'todos') {
+            data = data.filter((o) => o.status === tab)
+          }
+
+          const term = q.trim().toLowerCase()
+          if (term) {
+            data = data.filter((o) => {
+              const number = String(o.budgetNumber || o.orderNumber || '').toLowerCase()
+              const client = (o.customerSnapshot?.name ?? '').toLowerCase()
+              const phone = (o.customerSnapshot?.phone ?? '').toLowerCase()
+
+              return (
+                number.includes(term) ||
+                client.includes(term) ||
+                phone.includes(term)
+              )
+            })
           }
 
           if (alive) setOrders(data)
@@ -104,7 +110,7 @@ export default function OrdersPage() {
         try {
           const [ordersCount, customersCount, productsCount] =
             await Promise.all([
-              getOrdersCount(),
+              getAllOrders().then((o) => o.length),
               getCustomersCount(),
               getProductsCount(),
             ])

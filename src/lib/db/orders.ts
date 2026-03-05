@@ -9,6 +9,8 @@ import {
   orderBy,
   where,
   limit,
+  type QueryDocumentSnapshot,
+  type DocumentData,
 } from 'firebase/firestore'
 
 import { getDbInstance, ensureAuthReady } from '@/lib/firebase'
@@ -18,6 +20,15 @@ import { canTransition } from '@/lib/orders/workflow'
 import { toAddressObject } from '@/lib/address'
 
 const COLLECTION = 'orders'
+
+function mapDoc(doc: QueryDocumentSnapshot<DocumentData>): Order {
+  const data = doc.data()
+
+  return {
+    id: doc.id,
+    ...(data as any),
+  } as Order
+}
 
 /**
  * Hash leve (FNV-1a) para gerar chave idempotente sem depender de crypto.
@@ -94,13 +105,59 @@ export async function getAllOrders(): Promise<Order[]> {
   await ensureAuthReady()
   const db = getDbInstance()
 
-  const q = query(collection(db, COLLECTION), orderBy('createdAt', 'desc'))
+  const q = query(collection(db, COLLECTION))
   const snapshot = await getDocs(q)
 
-  return snapshot.docs.map((d) => ({
-    id: d.id,
-    ...d.data(),
-  })) as Order[]
+  return snapshot.docs.map(mapDoc)
+}
+
+export async function getOrdersByStatus(status: string): Promise<Order[]> {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const q = query(
+    collection(db, COLLECTION),
+    where('status', '==', status)
+  )
+
+  const snapshot = await getDocs(q)
+
+  return snapshot.docs.map(mapDoc)
+}
+
+export async function searchOrders(term: string): Promise<Order[]> {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const snapshot = await getDocs(collection(db, COLLECTION))
+
+  const normalized = term.toLowerCase()
+
+  return snapshot.docs
+    .map(mapDoc)
+    .filter((order) => {
+      const number =
+        (order as any).budgetNumber ??
+        (order as any).orderNumber ??
+        (order as any).number
+
+      const customerName =
+        (order as any).customerSnapshot?.name ??
+        (order as any).customerName
+
+      return (
+        number?.toString().includes(term) ||
+        customerName?.toLowerCase().includes(normalized)
+      )
+    })
+}
+
+export async function getOrdersCount(): Promise<number> {
+  await ensureAuthReady()
+  const db = getDbInstance()
+
+  const snapshot = await getDocs(collection(db, COLLECTION))
+  return snapshot.size
 }
 
 export async function getOrder(id: string): Promise<Order | null> {
